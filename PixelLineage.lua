@@ -811,8 +811,12 @@ end
 
 local idleConn = player.Idled:Connect(function()
 	if not S.antiAfk then return end
-	local vu = game:GetService("VirtualUser")
-	vu:CaptureController(); vu:ClickButton2(Vector2.new())
+	-- Idled fires on a low-identity thread; VirtualUser needs the LocalUser capability (executor level)
+	if setIdentity then pcall(setIdentity, 8) end
+	pcall(function()
+		local vu = game:GetService("VirtualUser")
+		vu:CaptureController(); vu:ClickButton2(Vector2.new())
+	end)
 end)
 
 ---------------------------------------------------------------- UI (NCL HUB DQR template)
