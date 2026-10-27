@@ -814,11 +814,17 @@ end
 
 -- Auto reconnect: Roblox shows its error prompt on a kick / lost connection; rejoin the game after a short pause.
 -- Back in the castle, "UNFINISHED BATTLE" is answered with RESUME BATTLE (never ABANDON, which costs a life).
-local reconnectConn = GuiService.ErrorMessageChanged:Connect(function(msg)
-	if not S.autoReconnect or not msg or msg == "" then return end
-	log("Disconnected: " .. msg .. " - rejoining in 5s")
-	task.delay(5, function()
-		pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+-- (GuiService.ErrorMessageChanged needs RobloxScript capability; the error prompt frame appearing under
+-- CoreGui.RobloxPromptGui.promptOverlay is readable from here)
+local reconnectConn = { Disconnect = function() end }
+pcall(function()
+	local overlay = CoreGui:WaitForChild("RobloxPromptGui", 10):WaitForChild("promptOverlay", 10)
+	reconnectConn = overlay.ChildAdded:Connect(function(child)
+		if not S.autoReconnect or child.Name ~= "ErrorPrompt" then return end
+		log("Disconnected - rejoining in 5s")
+		task.delay(5, function()
+			pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+		end)
 	end)
 end)
 
