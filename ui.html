@@ -1,0 +1,109 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>NCL MACRO - Pixel Lineage</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:20px;font-family:'Montserrat',system-ui,sans-serif;background:#0b0e1b;color:#e8ecff}
+button{font-family:inherit;cursor:pointer}
+.card{width:900px;height:540px;margin:0 auto;box-sizing:border-box;position:relative;overflow:hidden;background:radial-gradient(120% 90% at 0% 0%,#131a38 0%,#0b0e1b 55%),#0b0e1b;border:1px solid #262e54;border-radius:14px;box-shadow:rgba(0,0,0,.55) 0 20px 60px}
+.box{position:absolute;box-sizing:border-box;background:linear-gradient(#131830,#0f1324);border:1px solid #262e54;box-shadow:rgba(0,0,0,.35) 0 6px 18px,rgba(255,255,255,.04) 0 1px 0 inset}
+.head{left:12px;top:8px;width:876px;height:64px;border-radius:12px;display:flex;align-items:center;padding:0 12px;gap:12px}
+.logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#161c3d,#0a0e1a);border:1px solid rgba(128,86,242,.5);box-shadow:rgba(72,92,235,.35) 0 0 14px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:14px;color:#8fa2ff}
+.title{font-size:24px;font-weight:900;letter-spacing:.5px;white-space:nowrap}
+.title span{background:linear-gradient(90deg,#5c86ff,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sep{width:1px;height:30px;background:#262e54}
+.pill{display:flex;align-items:center;gap:8px;height:28px;box-sizing:border-box;padding:0 14px;border-radius:14px;width:150px;border:1px solid rgba(128,138,172,.6);background:rgba(128,138,172,.12);font-size:12px;font-weight:700;color:#808aac}
+.pill i{width:8px;height:8px;border-radius:4px;background:currentColor;box-shadow:0 0 8px currentColor}
+.pill.run{color:#1cdc96;border-color:rgba(28,220,150,.6);background:rgba(28,220,150,.12)}
+#status{flex:1;min-width:0;font-size:12px;color:#808aac;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icon{width:34px;height:34px;padding:0;border-radius:8px;border:1px solid #262e54;color:#e8ecff;background:linear-gradient(#131834,#0d1121)}
+.line{position:absolute;left:26px;top:70px;width:848px;height:2px;border-radius:1px;box-shadow:rgba(128,86,242,.6) 0 0 10px;background:linear-gradient(90deg,#485ceb,#8056f2,#f02d64)}
+.side{left:12px;top:84px;width:140px;height:444px;border-radius:14px;padding:8px;display:flex;flex-direction:column;gap:4px}
+.nav{padding:10px 12px;border-radius:9px;color:#a3adda;font:600 13px Montserrat,system-ui,sans-serif;cursor:pointer}
+.nav.on{background:#1c2142;color:#e8ecff;box-shadow:inset 3px 0 0 #8056f2}
+.main{left:162px;top:84px;width:726px;height:444px;border-radius:12px;padding:14px 18px 14px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden auto}
+.pane{display:none;flex-direction:column;gap:12px}.pane.on{display:flex}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lbl{width:110px;font:700 11px Montserrat;color:#a3adda;letter-spacing:.6px;text-transform:uppercase}
+.btn{padding:10px 12px;border-radius:9px;border:1px solid #2a3260;background:linear-gradient(180deg,#1c2142,#161a34);color:#a3adda;font:600 12px Montserrat,system-ui,sans-serif;text-align:center;min-width:84px}
+.btn.on{border-color:#8056f2;color:#e8ecff;background:linear-gradient(180deg,#2a2160,#1d1a44);box-shadow:0 0 10px rgba(128,86,242,.35)}
+.btn.big{flex:1;padding:14px;font-size:14px;font-weight:800}
+.btn.go{border-color:#1cdc96;color:#1cdc96}.btn.stop{border-color:#f02d64;color:#f02d64}
+.d-normal.on{border-color:#5fbf6e;color:#8fe39b}.d-hard.on{border-color:#e7c478;color:#e7c478}.d-nightmare.on{border-color:#e0505f;color:#ff7b88}.d-torment.on{border-color:#a855f7;color:#c58bff}
+.txt{font:600 12px Montserrat;color:#808aac}
+.cal{display:grid;grid-template-columns:130px 1fr 74px 56px 56px;gap:6px 8px;align-items:center;font-size:12px}
+.cal .n{font-weight:700}.cal .h{color:#808aac;font-size:11px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid #262e54;vertical-align:middle;margin-right:4px}
+.small{padding:6px 8px;min-width:0;font-size:11px}
+#log{font:500 12px Consolas,monospace;color:#a3adda;white-space:pre-wrap;line-height:1.6}
+#calbar{display:none;padding:10px 12px;border-radius:9px;border:1px solid #e7c478;color:#e7c478;font:700 12px Montserrat}
+</style></head>
+<body><div class="card">
+ <div class="box head"><div class="logo">NCL</div><div class="title">NCL <span>MACRO</span></div><div class="sep"></div>
+  <div class="pill" id="pill"><i></i><span id="pillt">IDLE</span></div><div id="status">Status: Idle</div>
+  <button class="icon" title="Quit macro" id="quit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e8ecff" stroke-width="2.5" stroke-linecap="round"><path d="M4 4l16 16M20 4L4 20"/></svg></button>
+  <div class="line"></div></div>
+ <div class="box side">
+  <div class="nav on" data-p="main">Auto Play</div><div class="nav" data-p="calib">Calibrate</div><div class="nav" data-p="logs">Log</div>
+ </div>
+ <div class="box main">
+  <div class="pane on" id="main">
+   <div class="row"><button class="btn big" id="toggle">START (F6)</button></div>
+   <div class="row"><span class="lbl">Auto</span>
+    <button class="btn" data-k="autoJoin">Auto Join</button><button class="btn" data-k="autoAttack">Auto Attack</button><button class="btn" data-k="autoSkill">Auto Skill</button></div>
+   <div class="row"><span class="lbl">Skill slot</span>
+    <button class="btn" data-v="skillSlot" data-x="1">1</button><button class="btn" data-v="skillSlot" data-x="2">2</button><button class="btn" data-v="skillSlot" data-x="3">3</button><button class="btn" data-v="skillSlot" data-x="4">4</button></div>
+   <div class="row"><span class="lbl">Mode</span>
+    <button class="btn" data-v="mode" data-x="solo">Solo</button><button class="btn" data-v="mode" data-x="multi">Multiplayer</button></div>
+   <div class="row" id="mprow"><span class="lbl">Multiplayer</span>
+    <button class="btn" data-v="mpMode" data-x="host">Host Lobby</button><button class="btn" data-v="mpMode" data-x="queue">Random Queue</button></div>
+   <div class="row"><span class="lbl">Difficulty</span>
+    <button class="btn d-normal" data-v="difficulty" data-x="normal">Normal</button><button class="btn d-hard" data-v="difficulty" data-x="hard">Hard</button><button class="btn d-nightmare" data-v="difficulty" data-x="nightmare">Nightmare</button><button class="btn d-torment" data-v="difficulty" data-x="torment">Torment</button></div>
+   <div class="txt">Red points in Calibrate are not set yet. Set them before using the feature they belong to.</div>
+  </div>
+  <div class="pane" id="calib">
+   <div id="calbar"></div>
+   <div class="txt">Click Set, then hover the mouse over that spot in Roblox within 3 seconds. Position and color are saved. Detect points must be set while that screen is showing.</div>
+   <div class="cal" id="calgrid"></div>
+  </div>
+  <div class="pane" id="logs"><div id="log"></div></div>
+ </div>
+</div>
+<script>
+const P=[
+ ['setout_btn','Hub: gold SET OUT button (detect)'],
+ ['setout_modal','Set Out popup: gold border of PLAY SOLO (detect)'],
+ ['solo','Set Out popup: PLAY SOLO'],
+ ['party','Set Out popup: FIND A PARTY'],
+ ['mp_host','Multiplayer: gold HOST A LOBBY (detect)'],
+ ['mp_queue','Multiplayer: RANDOM QUEUE'],
+ ['diff_normal','Multiplayer: NORMAL'],['diff_hard','Multiplayer: HARD'],['diff_nightmare','Multiplayer: NIGHTMARE'],['diff_torment','Multiplayer: TORMENT'],
+ ['start_run','Lobby / solo: gold START RUN (detect)'],
+ ['lobby_normal','Lobby: NORMAL'],['lobby_hard','Lobby: HARD'],['lobby_nightmare','Lobby: NIGHTMARE'],['lobby_torment','Lobby: TORMENT'],
+ ['turn_cursor','Battle: gold arrow left of ATTACK on your turn (detect)'],
+ ['attack','Battle: ATTACK'],['skills','Battle: SKILLS'],
+ ['skill_1','Skills list: skill 1'],['skill_2','Skills list: skill 2'],['skill_3','Skills list: skill 3'],['skill_4','Skills list: skill 4'],
+ ['target','Optional: enemy to click after attack/skill'],
+ ['continue1','Optional: victory / reward button (detect)'],['continue2','Optional: next floor / choice (detect)'],['continue3','Optional: death / return button (detect)']];
+let S={},busy=false;
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const api=(p,b)=>fetch(p,b?{method:'POST',body:JSON.stringify(b)}:{method:'POST'}).then(r=>r.json()).then(render);
+$$('.nav').forEach(n=>n.onclick=()=>{$$('.nav,.pane').forEach(x=>x.classList.remove('on'));n.classList.add('on');$('#'+n.dataset.p).classList.add('on')});
+$$('[data-k]').forEach(b=>b.onclick=()=>{S[b.dataset.k]=!S[b.dataset.k];api('/settings',S)});
+$$('[data-v]').forEach(b=>b.onclick=()=>{const v=b.dataset.x;S[b.dataset.v]=isNaN(v)?v:+v;api('/settings',S)});
+$('#toggle').onclick=()=>api('/toggle');
+$('#quit').onclick=()=>{api('/quit').catch(()=>{});document.body.innerHTML='<p style="text-align:center">Macro closed.</p>'};
+$('#calgrid').innerHTML=P.map(([n,h])=>`<div class="n" id="n-${n}">${n}</div><div class="h">${h}</div><div id="c-${n}"></div><button class="btn small" onclick="api('/cal?name=${n}')">Set</button><button class="btn small" onclick="api('/clear?name=${n}')">Clear</button>`).join('');
+function render(st){
+ S=st.settings;
+ $('#pill').classList.toggle('run',st.running);$('#pillt').textContent=st.running?'RUNNING':'IDLE';
+ $('#status').textContent='Status: '+st.status;
+ const t=$('#toggle');t.textContent=st.running?'STOP (F6)':'START (F6)';t.className='btn big '+(st.running?'stop':'go');
+ $$('[data-k]').forEach(b=>b.classList.toggle('on',!!S[b.dataset.k]));
+ $$('[data-v]').forEach(b=>b.classList.toggle('on',String(S[b.dataset.v])===b.dataset.x));
+ $('#mprow').style.display=S.mode==='multi'?'flex':'none';
+ P.forEach(([n])=>{const p=st.points[n],set=p&&p.x!=null;$('#n-'+n).style.color=set?'#1cdc96':'#f02d64';
+  $('#c-'+n).innerHTML=set?(p.color?`<span class="sw" style="background:${p.color}"></span>`:'')+(p.color||'click'):'not set'});
+ const cb=$('#calbar');cb.style.display=st.calName?'block':'none';if(st.calName)cb.textContent=`Hover over "${st.calName}" in Roblox... ${st.calIn}s`;
+ $('#log').textContent=(st.log||[]).join('\n')||'No activity yet.';
+}
+setInterval(()=>{if(!busy){busy=true;api('/state').finally(()=>busy=false)}},600);api('/state');
+</script></body></html>

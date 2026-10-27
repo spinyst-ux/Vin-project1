@@ -1,0 +1,80 @@
+﻿{
+    "tolerance":  30,
+    "clickDelay":  350,
+    "settings":  {
+                     "autoJoin":  true,
+                     "autoAttack":  true,
+                     "autoSkill":  false,
+                     "skillSlot":  1,
+                     "mode":  "solo",
+                     "mpMode":  "host",
+                     "difficulty":  "normal"
+                 },
+    "points":  {
+                   "setout_btn":  {
+                                      "x":  0.9375,
+                                      "y":  0.986,
+                                      "color":  "#E7C478"
+                                  },
+                   "setout_modal":  {
+                                        "x":  0.3185,
+                                        "y":  0.687,
+                                        "color":  "#E7C478"
+                                    },
+                   "solo":  {
+                                "x":  0.3715,
+                                "y":  0.687,
+                                "color":  null
+                            },
+                   "party":  {
+                                 "x":  0.5,
+                                 "y":  0.687,
+                                 "color":  null
+                             },
+                   "mp_host":  {
+                                   "x":  0.36,
+                                   "y":  0.375,
+                                   "color":  "#E7C478"
+                               },
+                   "mp_queue":  {
+                                    "x":  0.3915,
+                                    "y":  0.45,
+                                    "color":  null
+                                },
+                   "diff_normal":  {
+                                       "x":  0.327,
+                                       "y":  0.617,
+                                       "color":  null
+                                   },
+                   "diff_hard":  {
+                                     "x":  0.370,
+                                     "y":  0.617,
+                                     "color":  null
+                                 },
+                   "diff_nightmare":  {
+                                          "x":  0.4135,
+                                          "y":  0.617,
+                                          "color":  null
+                                      },
+                   "diff_torment":  {
+                                        "x":  0.4565,
+                                        "y":  0.617,
+                                        "color":  null
+                                    },
+                   "turn_cursor":  {
+                                       "x":  0.0155,
+                                       "y":  0.7825,
+                                       "color":  "#E7C478"
+                                   },
+                   "attack":  {
+                                  "x":  0.0465,
+                                  "y":  0.783,
+                                  "color":  null
+                              },
+                   "skills":  {
+                                  "x":  0.0465,
+                                  "y":  0.817,
+                                  "color":  null
+                              }
+               }
+}
