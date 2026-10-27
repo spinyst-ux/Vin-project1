@@ -351,6 +351,14 @@ local function usePotion()
 	return false
 end
 
+-- Our turn = the battle command menu's own ATTACK button is on screen. A plain "ATTACK" text match also hits the gear
+-- window's stat list ("+42 ATTACK"), which made the macro think it was in battle while standing in the castle.
+local function attackButton()
+	local cmds = pgui:FindFirstChild("PixelCommands", true)
+	local b = cmds and cmds:FindFirstChild("Commands") and cmds.Commands:FindFirstChild("Attack")
+	return (b and b:IsA("GuiObject") and shown(b)) and b or nil
+end
+
 ---------------------------------------------------------------- AUTO SELL
 -- Gear lives in the client's profile table (profile.gearBag[uid] = { rarity, base, locked, ... }); worn pieces are the
 -- values of profile.gear / profile.vanity. The game's own bulk sell is RPGCommand "GearSellMany" { uids }.
@@ -411,11 +419,11 @@ end
 local function step()
 	local list = scan()
 	reportEnd(list)
-	if S.autoSell and os.clock() - lastSell > 30 and not find(list, TXT.attack) then sellPass() end
-	local attack = find(list, TXT.attack)
+	if S.autoSell and os.clock() - lastSell > 30 and not attackButton() then sellPass() end
+	local attack = attackButton()
 
 	if attack and S.autoPotion and usePotion() then return 1.5 end
-	if attack and S.autoPotion then list = scan(); attack = find(list, TXT.attack) end
+	if attack and S.autoPotion then list = scan(); attack = attackButton() end
 
 	if (S.autoAttack or S.autoSkill) and attack then
 		if S.autoSkill then
@@ -430,7 +438,7 @@ local function step()
 				end
 			end
 			press(find(scan(), TXT.back)); task.wait(0.3)
-			attack = find(scan(), TXT.attack)
+			attack = attackButton()
 		end
 		if attack then press(attack); log("Attack"); pickTarget() end
 		return 1.5
@@ -589,6 +597,40 @@ task.spawn(function()
 	end
 end)
 
+---------------------------------------------------------------- DEFENSE LOG
+-- One line per enemy attack: what the server asked (normal / heavy / barrage), when we pressed vs the target (ms),
+-- the server's verdict and any damage that still landed. Shown in the Logs tab, kept in DIR/defense_log.txt.
+local dlogLines, dlogPending = {}, {}
+local function dlog(line)
+	table.insert(dlogLines, 1, os.date("%H:%M:%S") .. "  " .. line)
+	if #dlogLines > 80 then table.remove(dlogLines) end
+	pcall(function()
+		ensureDir()
+		local path, text = DIR .. "/defense_log.txt", os.date("%H:%M:%S") .. "  " .. line .. "\n"
+		if isfile(path) then appendfile(path, text) else writefile(path, text) end -- appendfile needs an existing file
+	end)
+end
+local function dlogPress(token, delta)
+	local p = dlogPending[token]
+	if p then p.presses[#p.presses + 1] = ("%+dms"):format(math.floor(delta * 1000 + 0.5)) end
+end
+local stateConn = game:GetService("ReplicatedStorage"):WaitForChild("PlatformBattles"):WaitForChild("Remotes"):WaitForChild("RPGState").OnClientEvent:Connect(function(name, d)
+	if type(d) ~= "table" then return end
+	if name == "DefenseTimingStarted" then
+		local kind = type(d.marks) == "table" and ("BARRAGE x" .. #d.marks) or (d.heavy and "HEAVY" or "normal")
+		dlogPending[tostring(d.token)] = { kind = kind, what = tostring(d.actionName or d.title or "?"), presses = {}, at = os.clock(),
+			win = math.floor((tonumber(d.perfect) or 0) * 1000 + 0.5) }
+	elseif name == "DefenseTimingResolved" then
+		local p = dlogPending[tostring(d.token)]
+		dlogPending[tostring(d.token)] = nil
+		local res = d.outcome and tostring(d.outcome) or (type(d.outcomes) == "table" and table.concat(d.outcomes, ",") or "?")
+		dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s)"):format(p and p.kind or "?", p and p.what or "?",
+			p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or "")))
+	elseif name == "CombatVFX" and d.kind == "DamageIndicator" and d.targetUserId == player.UserId and (tonumber(d.amount) or 0) > 0 and not d.healing then
+		dlog(("!! HIT %s for %s%s%s"):format(tostring(d.actionName or "?"), tostring(d.amount), d.critical and " CRIT" or "", d.dot and " (DoT)" or ""))
+	end
+end)
+
 ---------------------------------------------------------------- GAME SPEED
 -- Turns are paced by the server, but most of the time between them is the client waiting: battle animations,
 -- the enemy "presentation" that gates DefenseTimingReady, the delay before a QTE result is sent, tweens, and this
@@ -674,11 +716,13 @@ if qte then
 					self.nclPressAt = nil
 					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
 					if self.pressHandler then self.pressHandler() end
+					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
 				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.05 then
 					-- barrage: one press per strike, in order
 					local t = table.remove(hits, 1)
 					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
 					if self.pressHandler then self.pressHandler() end
+					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - t)
 				elseif m and m.at and os.clock() >= m.at - 0.05 then
 					local t = m.at
 					m.at = nil
@@ -687,6 +731,14 @@ if qte then
 				end
 				return r
 			end, ...)
+		end
+		-- Real clicks / keys reach the QTE through _press (the game treats ANY left click as a press, clicks on this
+		-- window included). One stray click before the mark used up the defense ("Miss, TOO EARLY") and blocked our
+		-- exact press. With Perfect QTE on only the script presses (it calls pressHandler directly, not _press).
+		o.press = o.press or qte._press
+		qte._press = function(self, ...)
+			if qte.nclOn then return end
+			return o.press(self, ...)
 		end
 		qte._pip = function(self, n, state, ...)
 			local r = o.pip(self, n, state, ...)
@@ -847,12 +899,28 @@ popIn()
 -- Bound after every other render step so the game's own "hide the mouse" runs first and we win the frame.
 local CURSOR_STEP = "NCL_PL_Cursor"
 pcall(function() RunService:UnbindFromRenderStep(CURSOR_STEP) end)
+-- The game draws its own cursor (PlayerGui.PlatformBattlesCursor); while over our window that one is switched off and
+-- the system cursor shown instead, otherwise both show at once.
+local gameCursorHidden = false
+local function setGameCursor(on)
+	local c = pgui:FindFirstChild("PlatformBattlesCursor")
+	if c and c:IsA("LayerCollector") then c.Enabled = on end
+	gameCursorHidden = not on
+end
 RunService:BindToRenderStep(CURSOR_STEP, Enum.RenderPriority.Last.Value + 100, function()
-	if not main.Visible then return end
 	local m, p, s = UIS:GetMouseLocation(), main.AbsolutePosition, main.AbsoluteSize
-	if m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y then UIS.MouseIconEnabled = true end
+	local over = main.Visible and m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y
+	if over then
+		UIS.MouseIconEnabled = true
+		if not gameCursorHidden then setGameCursor(false) end
+	elseif gameCursorHidden then
+		setGameCursor(true)
+	end
 end)
-local hoverConn = { Disconnect = function() pcall(function() RunService:UnbindFromRenderStep(CURSOR_STEP) end) end }
+local hoverConn = { Disconnect = function()
+	pcall(function() RunService:UnbindFromRenderStep(CURSOR_STEP) end)
+	if gameCursorHidden then setGameCursor(true) end
+end }
 
 -- HEADER
 local header = Instance.new("Frame")
@@ -1161,6 +1229,7 @@ local mapPage = createPage("Run Map", "Paths, events and chests between battles.
 local sellPage = createPage("Auto Sell", "Sell gear automatically by rarity and type.")
 local hookPage = createPage("Webhook", "Send a summary to Discord when a run ends.")
 local miscPage = createPage("Misc", "Quality-of-life extras.")
+local logsPage = createPage("Logs", "Every enemy attack: press timing vs target and the server's verdict.")
 local setPage = createPage("Setting", "Config, keybind and script control.")
 
 -- SIDEBAR
@@ -1211,6 +1280,9 @@ local navIcons = {
 	["Webhook"] = function(b) -- bell
 		iconPart(b, 4, 3, 10, 10, { radius = 5, hollow = 1.5 }); iconPart(b, 2, 12, 14, 2, { radius = 1 })
 		iconPart(b, 7, 15, 4, 3, { radius = 2 })
+	end,
+	["Logs"] = function(b) -- list lines
+		iconPart(b, 2, 3, 14, 2, { radius = 1 }); iconPart(b, 2, 8, 14, 2, { radius = 1 }); iconPart(b, 2, 13, 9, 2, { radius = 1 })
 	end,
 	["Misc"] = function(b) -- three dots
 		iconPart(b, 3, 8, 3, 3, { radius = 2 }); iconPart(b, 8, 8, 3, 3, { radius = 2 }); iconPart(b, 13, 8, 3, 3, { radius = 2 })
@@ -1293,6 +1365,7 @@ createTab("Run Map", mapPage)
 createTab("Auto Sell", sellPage)
 createTab("Webhook", hookPage)
 createTab("Misc", miscPage)
+createTab("Logs", logsPage)
 createTab("Setting", setPage)
 
 -- CARD: rounded surface with a title + one-line hint, its controls stacked inside (every section of every page)
@@ -1506,6 +1579,26 @@ do
 	MakeInput("@everyone or a user ID (123456789012345678)", "pingId", c)
 end
 
+-- LOGS
+do
+	local c = Card(logsPage, "Dodge log", "pressed = our press minus the target (inside ± perfect = dodge). Also in " .. DIR .. "/defense_log.txt")
+	local box = makeText(c, "No enemy attack yet.", 11, T.text, Enum.Font.Code)
+	box.Size = UDim2.new(1, 0, 0, 0); box.AutomaticSize = Enum.AutomaticSize.Y; box.TextWrapped = true
+	box.TextYAlignment = Enum.TextYAlignment.Top; box.RichText = true
+	onRefresh(function()
+		if not logsPage.Visible then return end
+		local out = {}
+		for i = 1, math.min(30, #dlogLines) do
+			local l = dlogLines[i]:gsub("<", "&lt;")
+			local col = (l:find("!! HIT") or l:find("Miss")) and "#F02D64" or (l:find("Dodge") and "#1CDC96" or "#E8ECFF")
+			out[#out + 1] = ('<font color="%s">%s</font>'):format(col, l)
+		end
+		box.Text = #out > 0 and table.concat(out, "\n") or "No enemy attack yet."
+	end)
+	local clr = MakeButton("Clear log", T.idle, c)
+	clr.MouseButton1Click:Connect(function() table.clear(dlogLines); pcall(writefile, DIR .. "/defense_log.txt", ""); refresh() end)
+end
+
 -- MISC
 do
 	local c = Card(miscPage, "Utility", "Hide QTE keeps Perfect QTE pressing unseen; Anti AFK stops the idle kick.")
@@ -1667,7 +1760,7 @@ local function destroy()
 	alive = false
 	if qte then qte.nclOn = false end
 	if getgenv then getgenv().NCL_SPEED = 1 end
-	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect()
+	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect(); stateConn:Disconnect()
 	gui:Destroy()
 end
 closeBtn.MouseButton1Click:Connect(destroy)
