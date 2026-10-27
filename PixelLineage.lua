@@ -258,6 +258,7 @@ end
 -- Skill list as the game shows it after SKILLS: each row holds a name label and either "<n> EN" or "CD <n>";
 -- the header reads "SKILLS EN <cur>/<max>". New names join S.skills (the priority list) at the bottom, enabled.
 local skillsDirty = true
+local syncSkills, battleMenu
 local function readSkills(list)
 	local en = 0
 	for _, e in ipairs(list) do local v = e[1]:match("^SKILLS EN (%d+)") if v then en = tonumber(v) end end
@@ -273,18 +274,39 @@ local function readSkills(list)
 			end
 		end
 	end
-	-- the list belongs to this hero: drop names this account doesn't have (configs are shared between accounts)
-	if next(rows) then
-		for i = #S.skills, 1, -1 do
-			if not rows[S.skills[i].name] then table.remove(S.skills, i); skillsDirty = true end
-		end
+	syncSkills(rows)
+	return rows
+end
+
+-- rows (name -> anything) is this hero's skill set: drop names it doesn't have (configs are shared between
+-- accounts), append new ones at the bottom, enabled
+function syncSkills(rows)
+	if not next(rows) then return end
+	for i = #S.skills, 1, -1 do
+		if not rows[S.skills[i].name] then table.remove(S.skills, i); skillsDirty = true end
 	end
 	for name in pairs(rows) do
 		local known = false
 		for _, sk in ipairs(S.skills) do if sk.name == name then known = true end end
 		if not known then table.insert(S.skills, { name = name, on = true }); skillsDirty = true end
 	end
-	return rows
+end
+
+-- The game's battle command menu object (PixelCommandMenu instance): has foeRows, actions (Attack/Skill/Item lists)
+-- and _perform. Found once in the GC, re-found when the battle UI is rebuilt.
+local menuCache
+function battleMenu()
+	local m = menuCache
+	if m and type(m.actions) == "table" and type(m.actions.Skill) == "table" and typeof(m.box) == "Instance" and m.box.Parent then return m end
+	menuCache = nil
+	for _, t in ipairs(getgc and getgc(true) or {}) do
+		if type(t) == "table" and rawget(t, "foeRows") and type(rawget(t, "actions")) == "table" and type(t._perform) == "function" then
+			menuCache = t
+			break
+		end
+	end
+	m = menuCache
+	return (m and type(m.actions.Skill) == "table") and m or nil
 end
 
 ---------------------------------------------------------------- PARTY + POTION
@@ -384,10 +406,12 @@ local function gearProfile()
 	return best
 end
 
+-- type from the item definition: GearConfig.Items[base].kind = Weapon / Helmet / Chest / Legs / Relic / Scroll
+-- (GearConfig.SlotsFor returns nothing for bag pieces, so every piece used to be skipped)
 local function gearType(item)
-	local ok, slots = pcall(function() return GearConfig.SlotsFor(item) end)
-	local s = ok and type(slots) == "table" and slots[1] or nil
-	return s and (s:match("^relic") and "relic" or s) or nil
+	local def = GearConfig.Items and GearConfig.Items[tostring(item.base or "")]
+	local kind = def and def.kind and tostring(def.kind):lower()
+	return kind == "helmet" and "head" or kind
 end
 
 local function sellPass(manual)
@@ -429,7 +453,28 @@ local function step()
 	if attack and S.autoPotion then list = scan(); attack = attackButton() end
 
 	if (S.autoAttack or S.autoSkill) and attack then
-		if S.autoSkill then
+		-- hidden path: the battle menu object holds the hero's skills (actions.Skill, enabled = false while on cooldown
+		-- or short on EN) and performs one with :_perform(action) - the SKILLS list never opens on screen
+		local menu = S.autoSkill and battleMenu()
+		if menu then
+			local rows = {}
+			for _, a in ipairs(menu.actions.Skill) do
+				if type(a) == "table" and a.name then rows[tostring(a.name)] = { action = a, locked = a.enabled == false } end
+			end
+			syncSkills(rows)
+			for _, sk in ipairs(S.skills) do
+				local row = sk.on and rows[sk.name]
+				if row and not row.locked then
+					task.spawn(function()
+						if setIdentity then pcall(setIdentity, 2) end
+						pcall(menu._perform, menu, row.action)
+					end)
+					task.wait(0.3)
+					log("Skill: " .. sk.name); pickTarget()
+					return 1.5
+				end
+			end
+		elseif S.autoSkill then
 			press(find(list, TXT.skills)); task.wait(0.4)
 			local rows = readSkills(scan())
 			-- first enabled skill in priority order that isn't on cooldown and fits the current EN
@@ -1252,7 +1297,6 @@ local mapPage = createPage("Run Map", "Paths, events and chests between battles.
 local sellPage = createPage("Auto Sell", "Sell gear automatically by rarity and type.")
 local hookPage = createPage("Webhook", "Send a summary to Discord when a run ends.")
 local miscPage = createPage("Misc", "Quality-of-life extras.")
-local logsPage = createPage("Logs", "Every enemy attack: press timing vs target and the server's verdict.")
 local setPage = createPage("Setting", "Config, keybind and script control.")
 
 -- SIDEBAR
@@ -1303,9 +1347,6 @@ local navIcons = {
 	["Webhook"] = function(b) -- bell
 		iconPart(b, 4, 3, 10, 10, { radius = 5, hollow = 1.5 }); iconPart(b, 2, 12, 14, 2, { radius = 1 })
 		iconPart(b, 7, 15, 4, 3, { radius = 2 })
-	end,
-	["Logs"] = function(b) -- list lines
-		iconPart(b, 2, 3, 14, 2, { radius = 1 }); iconPart(b, 2, 8, 14, 2, { radius = 1 }); iconPart(b, 2, 13, 9, 2, { radius = 1 })
 	end,
 	["Misc"] = function(b) -- three dots
 		iconPart(b, 3, 8, 3, 3, { radius = 2 }); iconPart(b, 8, 8, 3, 3, { radius = 2 }); iconPart(b, 13, 8, 3, 3, { radius = 2 })
@@ -1388,7 +1429,6 @@ createTab("Run Map", mapPage)
 createTab("Auto Sell", sellPage)
 createTab("Webhook", hookPage)
 createTab("Misc", miscPage)
-createTab("Logs", logsPage)
 createTab("Setting", setPage)
 
 -- CARD: rounded surface with a title + one-line hint, its controls stacked inside (every section of every page)
@@ -1400,7 +1440,8 @@ local function Card(page, title, hint)
 	round(c, 12); stroke(c, EDGE)
 	pad(c, 14, 14, 12, 14)
 	local l = Instance.new("UIListLayout"); l.Padding = UDim.new(0, 8); l.SortOrder = Enum.SortOrder.LayoutOrder; l.Parent = c
-	local head = Instance.new("Frame"); head.BackgroundTransparency = 1; head.Size = UDim2.new(1, 0, 0, hint and 34 or 20); head.Parent = c
+	local head = Instance.new("Frame"); head.BackgroundTransparency = 1; head.Size = UDim2.new(1, 0, 0, 20)
+	head.AutomaticSize = Enum.AutomaticSize.Y; head.Parent = c
 	local bar = Instance.new("Frame")
 	bar.Size = UDim2.fromOffset(4, 16); bar.Position = UDim2.fromOffset(0, 2); bar.BackgroundColor3 = Color3.new(1, 1, 1)
 	bar.BorderSizePixel = 0; bar.Parent = head
@@ -1409,8 +1450,9 @@ local function Card(page, title, hint)
 	do local gl = stroke(bar, NAV_VIOLET, 2); gl.Transparency = 0.6 end
 	local t = makeText(head, title, 14, T.text, Enum.Font.GothamBold); t.Size = UDim2.new(1, -14, 0, 20); t.Position = UDim2.fromOffset(14, 0)
 	if hint then
-		local h = makeText(head, hint, 11, T.muted); h.Size = UDim2.new(1, -14, 0, 14); h.Position = UDim2.fromOffset(14, 20)
-		h.TextTruncate = Enum.TextTruncate.AtEnd
+		local h = makeText(head, hint, 11, T.muted); h.Size = UDim2.new(1, -14, 0, 14); h.Position = UDim2.fromOffset(14, 22)
+		h.AutomaticSize = Enum.AutomaticSize.Y; h.TextWrapped = true
+		pad(head, 0, 0, 0, 2)
 	end
 	return c
 end
@@ -1602,26 +1644,6 @@ do
 	MakeInput("@everyone or a user ID (123456789012345678)", "pingId", c)
 end
 
--- LOGS
-do
-	local c = Card(logsPage, "Dodge log", "pressed = our press minus the target (inside ± perfect = dodge). Also in " .. DIR .. "/defense_log.txt")
-	local box = makeText(c, "No enemy attack yet.", 11, T.text, Enum.Font.Code)
-	box.Size = UDim2.new(1, 0, 0, 0); box.AutomaticSize = Enum.AutomaticSize.Y; box.TextWrapped = true
-	box.TextYAlignment = Enum.TextYAlignment.Top; box.RichText = true
-	onRefresh(function()
-		if not logsPage.Visible then return end
-		local out = {}
-		for i = 1, math.min(30, #dlogLines) do
-			local l = dlogLines[i]:gsub("<", "&lt;")
-			local col = (l:find("!! HIT") or l:find("Miss")) and "#F02D64" or (l:find("Dodge") and "#1CDC96" or "#E8ECFF")
-			out[#out + 1] = ('<font color="%s">%s</font>'):format(col, l)
-		end
-		box.Text = #out > 0 and table.concat(out, "\n") or "No enemy attack yet."
-	end)
-	local clr = MakeButton("Clear log", T.idle, c)
-	clr.MouseButton1Click:Connect(function() table.clear(dlogLines); pcall(writefile, DIR .. "/defense_log.txt", ""); refresh() end)
-end
-
 -- MISC
 do
 	local c = Card(miscPage, "Utility", "Hide QTE keeps Perfect QTE pressing unseen; Anti AFK stops the idle kick.")
@@ -1651,48 +1673,8 @@ do
 	MakeDropdown("Toggle UI key", "uiKey", { { "RightShift", "⌨️" }, { "RightControl", "⌨️" }, { "LeftAlt", "⌨️" }, { "Insert", "⌨️" }, { "F1", "⌨️" } }, c)
 end
 
--- DISCORD (same invite + logo as NCL HUB DQR): the real logo is written once to the workspace and loaded with
--- getcustomasset; a gradient "D" mark is drawn underneath so something always shows.
+-- DISCORD (same invite as NCL HUB DQR)
 local DISCORD_INVITE = "https://discord.gg/SuKX7Gc4B4"
-local DISCORD_LOGO_B64 = "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"
-local function discordLogoBytes()
-	local chars, lookup = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", {}
-	for i = 1, #chars do lookup[chars:sub(i, i)] = i - 1 end
-	local out, bits, nbits = {}, 0, 0
-	for i = 1, #DISCORD_LOGO_B64 do
-		local v = lookup[DISCORD_LOGO_B64:sub(i, i)]
-		if v then
-			bits = bits * 64 + v; nbits += 6
-			if nbits >= 8 then
-				nbits -= 8
-				local byte = math.floor(bits / (2 ^ nbits))
-				out[#out + 1] = string.char(byte)
-				bits -= byte * (2 ^ nbits)
-			end
-		end
-	end
-	return table.concat(out)
-end
-local function discordMark(parent)
-	local box = Instance.new("Frame")
-	box.Size = UDim2.fromScale(1, 1); box.BackgroundColor3 = Color3.fromRGB(10, 12, 22); box.BorderSizePixel = 0; box.Parent = parent
-	local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0.26, 0); bc.Parent = box
-	local d = makeText(box, "D", 14, Color3.new(1, 1, 1), Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
-	d.Size = UDim2.fromScale(1, 1)
-	local g = Instance.new("UIGradient"); g.Rotation = 45; g.Color = ColorSequence.new(Color3.fromRGB(88, 101, 242), Color3.fromRGB(114, 137, 218)); g.Parent = d
-	pcall(function()
-		local path = DIR .. "/discordlogo.png"
-		ensureDir()
-		if not (isfile and isfile(path)) then writefile(path, discordLogoBytes()) end
-		local asset = getcustomasset(path)
-		if asset and tostring(asset) ~= "" then
-			local img = Instance.new("ImageLabel")
-			img.Size = UDim2.fromScale(1, 1); img.BackgroundTransparency = 1; img.Image = asset; img.ScaleType = Enum.ScaleType.Fit
-			img.ZIndex = box.ZIndex + 2; img.Parent = parent
-		end
-	end)
-	return box
-end
 
 -- BOTTOM BAR: run button
 bottomBar = Instance.new("Frame")
@@ -1720,11 +1702,8 @@ do
 	local ks = stroke(discordBtn, Color3.fromRGB(121, 131, 245))
 	discordBtn.MouseEnter:Connect(function() ks.Color = Color3.fromRGB(190, 197, 255) end)
 	discordBtn.MouseLeave:Connect(function() ks.Color = Color3.fromRGB(121, 131, 245) end)
-	local holder = Instance.new("Frame"); holder.BackgroundTransparency = 1; holder.Size = UDim2.fromOffset(22, 22)
-	holder.AnchorPoint = Vector2.new(0, 0.5); holder.Position = UDim2.new(0, 14, 0.5, 0); holder.Parent = discordBtn
-	discordMark(holder)
-	local cap = makeText(discordBtn, "DISCORD", 13, Color3.new(1, 1, 1), Enum.Font.GothamBold)
-	cap.Size = UDim2.new(1, -46, 1, 0); cap.Position = UDim2.fromOffset(44, 0)
+	local cap = makeText(discordBtn, "DISCORD", 13, Color3.new(1, 1, 1), Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+	cap.Size = UDim2.fromScale(1, 1)
 	discordBtn.MouseButton1Click:Connect(function()
 		if setclipboard then setclipboard(DISCORD_INVITE) end
 		cap.Text = "COPIED!"
