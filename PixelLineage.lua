@@ -22,7 +22,7 @@ local TXT = {
 	host = "HOST A LOBBY", queue = "RANDOM QUEUE", start = "START RUN",
 	attack = "ATTACK", skills = "SKILLS", back = "BACK", path = "CHOOSE YOUR PATH", choose = "MAKE YOUR CHOICE",
 	satchel = "SATCHEL", potion = "HP POTION", ally = "CHOOSE AN ALLY", waitReady = "WAITING FOR READY", invite = "PARTY INVITE",
-	continue = { "CONTINUE", "TO BATTLE", "NEXT FLOOR", "NEXT", "CLAIM", "PLAY AGAIN", "RETURN TO CASTLE" },
+	continue = { "RESUME BATTLE", "CONTINUE", "TO BATTLE", "NEXT FLOOR", "NEXT", "CLAIM", "PLAY AGAIN", "RETURN TO CASTLE" },
 }
 
 local S = {
@@ -32,7 +32,7 @@ local S = {
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
 	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
-	webhook = "", pingId = "", hookClear = true, hookDeath = true, antiAfk = true, autoSave = true, uiKey = "RightShift",
+	webhook = "", pingId = "", hookClear = true, hookDeath = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
 }
 -- Config (RUN included) survives the teleport into each run: workspace/NCL HUB/PixelLineage/config.json.
 local HttpService = game:GetService("HttpService")
@@ -419,6 +419,9 @@ end
 local function step()
 	local list = scan()
 	reportEnd(list)
+	-- "UNFINISHED BATTLE" after a reconnect: go back into the fight before anything else (castle SET OUT is also on screen)
+	local resume = find(list, "RESUME BATTLE")
+	if resume then press(resume); log("Resume battle"); return 3 end
 	if S.autoSell and os.clock() - lastSell > 30 and not attackButton() then sellPass() end
 	local attack = attackButton()
 
@@ -808,6 +811,16 @@ if writefile then
 		end
 	end)
 end
+
+-- Auto reconnect: Roblox shows its error prompt on a kick / lost connection; rejoin the game after a short pause.
+-- Back in the castle, "UNFINISHED BATTLE" is answered with RESUME BATTLE (never ABANDON, which costs a life).
+local reconnectConn = GuiService.ErrorMessageChanged:Connect(function(msg)
+	if not S.autoReconnect or not msg or msg == "" then return end
+	log("Disconnected: " .. msg .. " - rejoining in 5s")
+	task.delay(5, function()
+		pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+	end)
+end)
 
 local idleConn = player.Idled:Connect(function()
 	if not S.antiAfk then return end
@@ -1607,6 +1620,7 @@ end
 do
 	local c = Card(miscPage, "Utility", "Hide QTE keeps Perfect QTE pressing unseen; Anti AFK stops the idle kick.")
 	pair(c, { "Hide QTE", "hideQTE" }, { "Anti AFK", "antiAfk" })
+	MakeToggle("Auto Reconnect", "autoReconnect", c)
 end
 
 -- SETTING
@@ -1764,7 +1778,7 @@ local function destroy()
 	alive = false
 	if qte then qte.nclOn = false end
 	if getgenv then getgenv().NCL_SPEED = 1 end
-	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect(); stateConn:Disconnect()
+	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect(); stateConn:Disconnect(); reconnectConn:Disconnect()
 	gui:Destroy()
 end
 closeBtn.MouseButton1Click:Connect(destroy)
