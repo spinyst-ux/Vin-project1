@@ -30,7 +30,7 @@ local S = {
 	mode = "Solo", mpMode = "Host", difficulty = "Normal", targetName = "", clickMode = "Background",
 	skills = {}, autoChest = true, autoPath = true, pathStars = "3", pathBy = "Reward",
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
-	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x",
+	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x", autoSlot = false, slotNum = "1",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
 	webhook = "", pingId = "", hookClear = true, hookDeath = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
 }
@@ -453,6 +453,20 @@ local function step()
 	-- "UNFINISHED BATTLE" after a reconnect: go back into the fight before anything else (castle SET OUT is also on screen)
 	local resume = find(list, "RESUME BATTLE")
 	if resume then press(resume); log("Resume battle"); return 3 end
+	-- character select: main menu CHARACTER SELECT -> SlotN's ENTER. Only ENTER is pressed; locked slots say UNLOCK (Robux)
+	if S.autoSlot then
+		local gate = pgui:FindFirstChild("PlatformBattlesUI") and pgui.PlatformBattlesUI:FindFirstChild("Root")
+		gate = gate and gate:FindFirstChild("ProfileGate")
+		local card = gate and gate:FindFirstChild("CharacterSlotsPage")
+		card = card and card:FindFirstChild("Slot" .. S.slotNum, true)
+		local enter = card and card:FindFirstChild("Action", true)
+		if enter and shown(enter) then
+			if norm(enter.Text):sub(1, 5) == "ENTER" then press(enter); log("Enter slot " .. S.slotNum); return 3 end
+			log("Slot " .. S.slotNum .. " is locked"); return 5
+		end
+		local open = gate and gate:FindFirstChild("CharacterSelect", true)
+		if open and shown(open) then press(open); return 1.5 end
+	end
 	if S.autoSell and os.clock() - lastSell > 30 and not attackButton() then sellPass() end
 	local attack = attackButton()
 
@@ -1496,6 +1510,11 @@ do
 	pair(c, { "Auto Invite", "autoInvite" }, { "Wait for Party", "waitParty" })
 	MakeInput("Usernames to invite, comma separated (friend1, friend2)", "inviteList", c)
 	MakeToggle("Auto Accept Invites", "autoAccept", c)
+end
+do
+	local c = Card(playPage, "Character", "From the main menu: opens Character Select and enters this slot. Locked slots are never bought.")
+	MakeToggle("Auto Pick Slot", "autoSlot", c)
+	MakeDropdown("Slot", "slotNum", { { "1", "1️⃣" }, { "2", "2️⃣" }, { "3", "3️⃣" }, { "4", "4️⃣" }, { "5", "5️⃣" }, { "6", "6️⃣" } }, c)
 end
 
 -- BATTLE
