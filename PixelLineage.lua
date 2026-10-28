@@ -141,8 +141,13 @@ local function buttonOf(g)
 end
 
 local setIdentity = setthreadidentity or set_thread_identity or setidentity
--- getgc(true) (include tables) errors or is missing on some mobile executors; never let that kill a step
-local function gcTables()
+-- Tables holding all of `keys`. filtergc matches natively (no heap walk); the full GC walk is the fallback and can
+-- stall slow clients, so callers keep it rare. getgc(true) errors or is missing on some mobile executors: never fatal.
+local function gcTables(keys)
+	if filtergc then
+		local ok, r = pcall(filtergc, "table", { Keys = keys })
+		if ok and type(r) == "table" then return r end
+	end
 	if not getgc then return {} end
 	local ok, r = pcall(getgc, true)
 	if not (ok and type(r) == "table") then ok, r = pcall(getgc) end
@@ -322,7 +327,7 @@ function battleMenu()
 	local m = menuCache
 	if m and type(m.actions) == "table" and type(m.actions.Skill) == "table" and typeof(m.box) == "Instance" and m.box.Parent then return m end
 	menuCache = nil
-	for _, t in ipairs(gcTables()) do
+	for _, t in ipairs(gcTables({ "foeRows", "actions" })) do
 		if type(t) == "table" and rawget(t, "foeRows") and type(rawget(t, "actions")) == "table" and type(t._perform) == "function" then
 			menuCache = t
 			break
@@ -385,7 +390,7 @@ local function usePotion()
 	if not item then return false end
 	press(item); task.wait(0.4)
 	local sl = scan()
-	-- list title "HP <left>/3 | BREWS ..." : none left this run -> stop trying until the next run starts
+	-- list title "HP <left>/3 | BREWS ..." : none left this run -> stop trying until the next run starts (reset on join / replay)
 	for _, e in ipairs(sl) do
 		if e[1]:match("^HP 0 3") then potionPause = math.huge; press(find(sl, TXT.back)); task.wait(0.3); return false end
 	end
@@ -427,7 +432,7 @@ local lastSell, sellNote = -999, "Auto Sell: idle"
 -- No version field exists; the newest has the most gold (farming and selling only raise it), bag size breaks ties.
 local function gearProfile()
 	local best, bg, bn = nil, -1, -1
-	for _, t in ipairs(gcTables()) do
+	for _, t in ipairs(gcTables({ "gearBag" })) do
 		if type(t) == "table" and type(rawget(t, "gearBag")) == "table" then
 			local n, g = 0, tonumber(rawget(t, "gold")) or 0
 			for _ in pairs(t.gearBag) do n += 1 end
@@ -567,6 +572,7 @@ local function step()
 	if S.autoJoin then
 		-- Picking a difficulty re-renders the window: every button found before it is destroyed, so re-scan.
 		local function pickDiff()
+			potionPause = -999 -- new run: potions are 3 again
 			press(find(list, S.difficulty:upper())); task.wait(0.4)
 			if S.difficulty == "Torment" then pickTorment() end
 			return scan()
@@ -630,9 +636,9 @@ local function step()
 	-- Auto Replay: PLAY AGAIN on the run-end screen (off = Auto Next falls back to RETURN TO CASTLE)
 	if S.autoReplay then
 		local again = find(list, "PLAY AGAIN")
-		if again then press(again); log("Replay"); return 2 end
+		if again then potionPause = -999; press(again); log("Replay"); return 2 end
 	end
-	if S.autoContinue then
+	do -- path, event and chest each have their own toggle; Auto Next Stage only gates the continue buttons below
 		-- run map: cards RunMap.Cards.OptionN, each with two rows of 5 star icons (DANGER at y=7, REWARD at y=29). Pick the card whose chosen row is closest to S.pathStars; ties -> leftmost.
 		local sign = S.autoPath and find(list, TXT.path)
 		local cards = sign and sign:FindFirstAncestor("Cards")
@@ -709,7 +715,7 @@ local function step()
 				end
 			end
 		end
-		for _, w in ipairs(TXT.continue) do
+		for _, w in ipairs(S.autoContinue and TXT.continue or {}) do
 			local c = find(list, w)
 			if c then press(c); log("Click " .. w); return 1.5 end
 		end
@@ -841,14 +847,16 @@ if speed() > 1 then installSpeedHooks() end
 -- Defense: graded on the server from pressedAt; perfect at startedAt + target * duration (+-32ms).
 local qte = getgenv and getgenv().NCL_PL_QTE
 if not qte and getgc then
-	for _, t in ipairs(gcTables()) do
+	for _, t in ipairs(gcTables({ "_defense", "_timedMarks", "_send" })) do
 		if type(t) == "table" and rawget(t, "_defense") and rawget(t, "_timedMarks") and rawget(t, "_send") then qte = t; break end
 	end
 end
 local gcInfo = qte and "qte-from-gc" or "qte-not-in-gc"
 -- getgc(true) is missing / limited on some mobile executors: require the class module itself (cached, same table)
 if not qte then
-	for _, m in ipairs(game:GetDescendants()) do
+	local mods = game:GetService("ReplicatedStorage"):GetDescendants()
+	for _, m in ipairs(player:FindFirstChild("PlayerScripts") and player.PlayerScripts:GetDescendants() or {}) do mods[#mods + 1] = m end
+	for _, m in ipairs(mods) do
 		if m:IsA("ModuleScript") and m.Name:find("QTE") then
 			if setIdentity then pcall(setIdentity, 2) end
 			local ok, t = pcall(require, m)
@@ -887,19 +895,25 @@ if qte then
 					local cap = os.clock() + 0.13
 					while clock() < target and os.clock() < cap do end
 				end
-				local now = Workspace:GetServerTimeNow()
+				-- GetServerTimeNow can stay frozen for the whole frame on some executors (the spin then ran its full cap
+				-- and the press reached the server ~20ms+ late while the log said +1ms): convert the target to os.clock,
+				-- which always advances, and aim PRESS_LEAD early so the press lands inside the ±18ms window
+				local PRESS_LEAD = 0.010
+				local now, clock0 = Workspace:GetServerTimeNow(), os.clock()
+				local function onClock(t) return clock0 + (t - now) - PRESS_LEAD end
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
 				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
 					self.nclPressAt = nil
-					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
+					local ct = onClock(at)
+					spinUntil(ct, os.clock)
 					if self.pressHandler then self.pressHandler() end
-					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
+					dlogPress(self.nclPressToken, os.clock() - ct - PRESS_LEAD)
 				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
 					-- barrage: one press per strike, in order
-					local t = table.remove(hits, 1)
-					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
+					local ct = onClock(table.remove(hits, 1))
+					spinUntil(ct, os.clock)
 					if self.pressHandler then self.pressHandler() end
-					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - t)
+					dlogPress(self.nclPressToken, os.clock() - ct - PRESS_LEAD)
 				elseif m and m.at and os.clock() >= m.at - 0.05 then
 					local t = m.at
 					m.at = nil
@@ -1597,8 +1611,8 @@ end
 
 -- AUTO PLAY
 do
-	local c = Card(playPage, "Automation", "Next clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Replay clicks PLAY AGAIN.")
-	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next", "autoContinue" })
+	local c = Card(playPage, "Automation", "Next Stage clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Replay clicks PLAY AGAIN. Path is in Run Map.")
+	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next Stage", "autoContinue" })
 	MakeToggle("Auto Replay", "autoReplay", c)
 end
 local mpRow
