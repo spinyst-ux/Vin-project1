@@ -310,7 +310,12 @@ function battleMenu()
 end
 
 ---------------------------------------------------------------- PARTY + POTION
-local RPGCommand = game:GetService("ReplicatedStorage"):WaitForChild("PlatformBattles"):WaitForChild("Remotes"):WaitForChild("RPGCommand")
+local RPGCommand
+task.spawn(function()
+	local pb = game:GetService("ReplicatedStorage"):WaitForChild("PlatformBattles", 20)
+	local remotes = pb and pb:WaitForChild("Remotes", 20)
+	RPGCommand = remotes and remotes:WaitForChild("RPGCommand", 20)
+end)
 local lastInvite = -999
 
 -- Listed names (username or display name, comma separated) that are in this server, excluding us.
@@ -394,13 +399,15 @@ pcall(function()
 end)
 local lastSell, sellNote = -999, "Auto Sell: idle"
 
+-- Several profile snapshots can sit in memory at once, including stale ones (pieces already sold still listed).
+-- No version field exists; the newest has the most gold (farming and selling only raise it), bag size breaks ties.
 local function gearProfile()
-	local best, bn = nil, -1
+	local best, bg, bn = nil, -1, -1
 	for _, t in ipairs(getgc and getgc(true) or {}) do
 		if type(t) == "table" and type(rawget(t, "gearBag")) == "table" then
-			local n = 0
+			local n, g = 0, tonumber(rawget(t, "gold")) or 0
 			for _ in pairs(t.gearBag) do n += 1 end
-			if n > bn then best, bn = t, n end
+			if g > bg or (g == bg and n > bn) then best, bg, bn = t, g, n end
 		end
 	end
 	return best
@@ -431,7 +438,7 @@ local function sellPass(manual)
 		end
 	end
 	if #uids > 0 then
-		RPGCommand:FireServer("GearSellMany", { uids = uids })
+		if RPGCommand then RPGCommand:FireServer("GearSellMany", { uids = uids }) end
 		sellNote = ("Sold %d piece(s) for ~%d gold (%s)"):format(#uids, gold, os.date("%H:%M:%S"))
 		log(sellNote)
 	elseif manual then
@@ -505,7 +512,9 @@ local function step()
 			local want = invitees()
 			if os.clock() - lastInvite > 20 and #want > 0 then
 				lastInvite = os.clock()
-				for _, p in ipairs(want) do RPGCommand:FireServer("RunLobby", { action = "invite", userId = p.UserId }) end
+				for _, p in ipairs(want) do
+					if RPGCommand then RPGCommand:FireServer("RunLobby", { action = "invite", userId = p.UserId }) end
+				end
 				log("Invited " .. #want .. " player(s)")
 			end
 			local n = startBtn and tonumber(norm(startBtn.Text):match("START RUN (%d+)")) or 0
@@ -662,20 +671,28 @@ local function dlogPress(token, delta)
 	local p = dlogPending[token]
 	if p then p.presses[#p.presses + 1] = ("%+dms"):format(math.floor(delta * 1000 + 0.5)) end
 end
-local stateConn = game:GetService("ReplicatedStorage"):WaitForChild("PlatformBattles"):WaitForChild("Remotes"):WaitForChild("RPGState").OnClientEvent:Connect(function(name, d)
-	if type(d) ~= "table" then return end
-	if name == "DefenseTimingStarted" then
-		local kind = type(d.marks) == "table" and ("BARRAGE x" .. #d.marks) or (d.heavy and "HEAVY" or "normal")
-		dlogPending[tostring(d.token)] = { kind = kind, what = tostring(d.actionName or d.title or "?"), presses = {}, at = os.clock(),
-			win = math.floor((tonumber(d.perfect) or 0) * 1000 + 0.5) }
-	elseif name == "DefenseTimingResolved" then
-		local p = dlogPending[tostring(d.token)]
-		dlogPending[tostring(d.token)] = nil
-		local res = d.outcome and tostring(d.outcome) or (type(d.outcomes) == "table" and table.concat(d.outcomes, ",") or "?")
-		dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s)"):format(p and p.kind or "?", p and p.what or "?",
-			p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or "")))
-	elseif name == "CombatVFX" and d.kind == "DamageIndicator" and d.targetUserId == player.UserId and (tonumber(d.amount) or 0) > 0 and not d.healing then
-		dlog(("!! HIT %s for %s%s%s"):format(tostring(d.actionName or "?"), tostring(d.amount), d.critical and " CRIT" or "", d.dot and " (DoT)" or ""))
+local stateConn = { Disconnect = function() end }
+task.spawn(function()
+	local pb = game:GetService("ReplicatedStorage"):WaitForChild("PlatformBattles", 20)
+	local remotes = pb and pb:WaitForChild("Remotes", 20)
+	local state = remotes and remotes:WaitForChild("RPGState", 20)
+	if state then
+		stateConn = state.OnClientEvent:Connect(function(name, d)
+			if type(d) ~= "table" then return end
+			if name == "DefenseTimingStarted" then
+				local kind = type(d.marks) == "table" and ("BARRAGE x" .. #d.marks) or (d.heavy and "HEAVY" or "normal")
+				dlogPending[tostring(d.token)] = { kind = kind, what = tostring(d.actionName or d.title or "?"), presses = {}, at = os.clock(),
+					win = math.floor((tonumber(d.perfect) or 0) * 1000 + 0.5) }
+			elseif name == "DefenseTimingResolved" then
+				local p = dlogPending[tostring(d.token)]
+				dlogPending[tostring(d.token)] = nil
+				local res = d.outcome and tostring(d.outcome) or (type(d.outcomes) == "table" and table.concat(d.outcomes, ",") or "?")
+				dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s)"):format(p and p.kind or "?", p and p.what or "?",
+					p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or "")))
+			elseif name == "CombatVFX" and d.kind == "DamageIndicator" and d.targetUserId == player.UserId and (tonumber(d.amount) or 0) > 0 and not d.healing then
+				dlog(("!! HIT %s for %s%s%s"):format(tostring(d.actionName or "?"), tostring(d.amount), d.critical and " CRIT" or "", d.dot and " (DoT)" or ""))
+			end
+		end)
 	end
 end)
 
@@ -750,22 +767,22 @@ if qte then
 		qte._run = function(self, step, ...)
 			return o.run(self, function(...)
 				local r = step(...)
-				-- Frames are 16ms+ apart and the perfect window shrinks to 18ms on a dodge streak, so once the moment is
-				-- within 50ms, spin inside this frame until it arrives and press then (costs one short frame hitch).
-				-- The spin is capped at 60ms of real time: server time may only tick per frame, and an uncapped wait on it
-				-- inside a frame never ends (that froze the game once).
+				-- The perfect window shrinks to 18ms on a dodge streak and frames can be 50ms+ apart when FPS dips (a press
+				-- landed +23ms late that way), so from 120ms before the moment, spin inside this frame until it arrives and
+				-- press then (costs one frame hitch). The spin is capped at 130ms of real time: server time may only tick per
+				-- frame, and an uncapped wait on it inside a frame never ends (that froze the game once).
 				local function spinUntil(target, clock)
-					local cap = os.clock() + 0.06
+					local cap = os.clock() + 0.13
 					while clock() < target and os.clock() < cap do end
 				end
 				local now = Workspace:GetServerTimeNow()
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
-				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.05 then
+				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
 					self.nclPressAt = nil
 					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
 					if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
-				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.05 then
+				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
 					-- barrage: one press per strike, in order
 					local t = table.remove(hits, 1)
 					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
@@ -1003,22 +1020,18 @@ do
 	g.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, T.accent), ColorSequenceKeypoint.new(0.5, T.accent2), ColorSequenceKeypoint.new(1, T.pink) })
 	g.Parent = line
 
-	-- logo: dark rounded square with a blue -> purple -> pink "NCL"
+	-- logo + title: same as the Blade Ball menu (dark tile, violet border, soft blue "NCL", "NCL HUB" in one colour)
 	local box = Instance.new("Frame")
 	box.Size = UDim2.fromOffset(40, 40); box.Position = UDim2.fromOffset(12, 12)
-	box.BackgroundColor3 = Color3.fromRGB(10, 14, 26); box.BorderSizePixel = 0; box.Parent = header
-	local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0.24, 0); bc.Parent = box
-	local mark = makeText(box, "NCL", 14, Color3.new(1, 1, 1), Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
+	box.BackgroundColor3 = Color3.new(1, 1, 1); box.BorderSizePixel = 0; box.Parent = header
+	local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 10); bc.Parent = box
+	do local bg = Instance.new("UIGradient"); bg.Rotation = 45; bg.Color = ColorSequence.new(Color3.fromRGB(22, 28, 61), Color3.fromRGB(10, 14, 26)); bg.Parent = box end
+	do local bs = stroke(box, Color3.fromRGB(128, 86, 242)); bs.Transparency = 0.5 end
+	local mark = makeText(box, "NCL", 14, Color3.fromRGB(143, 162, 255), Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
 	mark.Size = UDim2.fromScale(1, 1)
-	local mg = Instance.new("UIGradient")
-	mg.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(64, 132, 255)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(160, 90, 245)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(240, 70, 145)),
-	})
-	mg.Parent = mark
 
-	local title = makeText(header, '<font color="#FFFFFF">NCL</font> <font color="#5C86FF">HUB</font>', 24, T.text, Enum.Font.GothamBlack)
-	title.RichText = true; title.Size = UDim2.new(0, 170, 1, 0); title.Position = UDim2.fromOffset(60, 0)
+	local title = makeText(header, "NCL HUB", 22, Color3.fromRGB(143, 162, 255), Enum.Font.GothamBold)
+	title.Size = UDim2.new(0, 170, 1, 0); title.Position = UDim2.fromOffset(60, 0)
 	local div = Instance.new("Frame")
 	div.Size = UDim2.fromOffset(1, 30); div.Position = UDim2.fromOffset(236, 17)
 	div.BackgroundColor3 = T.stroke; div.BorderSizePixel = 0; div.Parent = header
@@ -1088,6 +1101,8 @@ local function MakeButton(text, color, parent)
 	b.Text = text; b.Size = UDim2.new(1, 0, 0, 34); b.BackgroundColor3 = color; b.TextColor3 = T.text
 	b.Font = Enum.Font.GothamSemibold; b.TextSize = 13; b.BorderSizePixel = 0; b.AutoButtonColor = false; b.Parent = parent
 	round(b, 8)
+	do local bs = Instance.new("UIStroke"); bs.Color = Color3.new(1, 1, 1); bs.Transparency = 0.85; bs.Thickness = 1
+		bs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; bs.Parent = b end
 	local g = Instance.new("UIGradient"); g.Rotation = 90
 	g.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(205, 208, 226)); g.Parent = b
 	-- hover / press feedback via the gradient, so it never fights ON/OFF colours
@@ -1306,7 +1321,7 @@ sidebar.BackgroundColor3 = T.panel; sidebar.BorderSizePixel = 0; sidebar.Parent 
 round(sidebar, 14); stroke(sidebar); polish(sidebar)
 pad(sidebar, 8, 8, 8, 8)
 local tabBar = Instance.new("ScrollingFrame")
-tabBar.Size = UDim2.new(1, 0, 1, -48); tabBar.BackgroundTransparency = 1; tabBar.BorderSizePixel = 0
+tabBar.Size = UDim2.new(1, 0, 1, -112); tabBar.BackgroundTransparency = 1; tabBar.BorderSizePixel = 0
 tabBar.ScrollBarThickness = 3; tabBar.ScrollBarImageColor3 = T.accent2; tabBar.ScrollBarImageTransparency = 0.4
 tabBar.CanvasSize = UDim2.new(); tabBar.AutomaticCanvasSize = Enum.AutomaticSize.Y; tabBar.Parent = sidebar
 pad(tabBar, 0, 2, 2, 2)
@@ -1371,7 +1386,7 @@ local function switchTab(i)
 		local on = k == i
 		t.page.Visible = on
 		tween(t.page, 0, { Position = UDim2.fromOffset(PAGE_X, 84) })
-		tween(t.btn, 0.2, { BackgroundTransparency = on and 0 or 1, TextColor3 = on and T.text or T.muted })
+		tween(t.btn, 0.2, { BackgroundTransparency = on and 0 or 0.975, TextColor3 = on and T.text or Color3.fromRGB(170, 179, 221) })
 		t.bar.Visible = on
 	end
 	-- page slide + fade: in 18px from the right while a cover in the page colour fades away
@@ -1388,8 +1403,8 @@ local function switchTab(i)
 end
 local function createTab(text, page)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(1, 0, 0, 40); b.BackgroundColor3 = Color3.new(1, 1, 1); b.BackgroundTransparency = 1
-	b.Text = text; b.TextTransparency = 1; b.TextColor3 = T.muted; b.BorderSizePixel = 0; b.AutoButtonColor = false; b.Parent = tabBar
+	b.Size = UDim2.new(1, 0, 0, 40); b.BackgroundColor3 = Color3.new(1, 1, 1); b.BackgroundTransparency = 0.975
+	b.Text = text; b.TextTransparency = 1; b.TextColor3 = Color3.fromRGB(170, 179, 221); b.BorderSizePixel = 0; b.AutoButtonColor = false; b.Parent = tabBar
 	round(b, 10)
 	local g = Instance.new("UIGradient"); g.Color = ColorSequence.new(NAV_BLUE, NAV_VIOLET); g.Transparency = NumberSequence.new(0.74, 0.9); g.Parent = b
 	local edge = stroke(b, NAV_EDGE); edge.Transparency = 1
@@ -1408,20 +1423,20 @@ local function createTab(text, page)
 	local iconBox = Instance.new("Frame"); iconBox.Size = UDim2.fromOffset(18, 18); iconBox.BackgroundTransparency = 1
 	iconBox.LayoutOrder = 1; iconBox.Parent = content
 	if navIcons[text] then navIcons[text](iconBox) end
-	local cap = makeText(content, text, 13, T.muted, Enum.Font.GothamBold)
+	local cap = makeText(content, text, 13, Color3.fromRGB(170, 179, 221), Enum.Font.GothamBold)
 	cap.Size = UDim2.new(1, -27, 1, 0); cap.LayoutOrder = 2
 	b:GetPropertyChangedSignal("TextColor3"):Connect(function() cap.TextColor3 = b.TextColor3 end)
 	local function syncActive(animate)
 		tween(edge, animate and 0.2 or 0, { Transparency = strip.Visible and 0.62 or 1 })
-		paintIcon(iconBox, strip.Visible and NAV_ICON_ON or T.muted, animate)
+		paintIcon(iconBox, strip.Visible and NAV_ICON_ON or Color3.fromRGB(170, 179, 221), animate)
 	end
 	strip:GetPropertyChangedSignal("Visible"):Connect(function() syncActive(true) end)
 	syncActive(false)
 	table.insert(tabs, { btn = b, page = page, bar = strip })
 	local i = #tabs
 	b.MouseButton1Click:Connect(function() switchTab(i) end)
-	b.MouseEnter:Connect(function() if not strip.Visible then tween(b, 0.12, { TextColor3 = T.text, BackgroundTransparency = 0.85 }) end end)
-	b.MouseLeave:Connect(function() if not strip.Visible then tween(b, 0.2, { TextColor3 = T.muted, BackgroundTransparency = 1 }) end end)
+	b.MouseEnter:Connect(function() if not strip.Visible then tween(b, 0.12, { TextColor3 = T.text, BackgroundTransparency = 0.92 }) end end)
+	b.MouseLeave:Connect(function() if not strip.Visible then tween(b, 0.2, { TextColor3 = Color3.fromRGB(170, 179, 221), BackgroundTransparency = 0.975 }) end end)
 end
 createTab("Auto Play", playPage)
 createTab("Battle", battlePage)
@@ -1435,9 +1450,9 @@ createTab("Setting", setPage)
 local CARD = Color3.fromRGB(17, 20, 42)
 local function Card(page, title, hint)
 	local c = Instance.new("Frame")
-	c.Size = UDim2.new(1, 0, 0, 0); c.AutomaticSize = Enum.AutomaticSize.Y; c.BackgroundColor3 = CARD
+	c.Size = UDim2.new(1, 0, 0, 0); c.AutomaticSize = Enum.AutomaticSize.Y; c.BackgroundColor3 = Color3.fromRGB(21, 26, 56)
 	c.BorderSizePixel = 0; c.Parent = page
-	round(c, 12); stroke(c, EDGE)
+	round(c, 12); stroke(c, EDGE); polish(c, 200)
 	pad(c, 14, 14, 12, 14)
 	local l = Instance.new("UIListLayout"); l.Padding = UDim.new(0, 8); l.SortOrder = Enum.SortOrder.LayoutOrder; l.Parent = c
 	local head = Instance.new("Frame"); head.BackgroundTransparency = 1; head.Size = UDim2.new(1, 0, 0, 20)
@@ -1567,9 +1582,9 @@ local function chip(parent, label, tbl, key, color)
 	b.MouseButton1Click:Connect(function() S[tbl][key] = not S[tbl][key] or nil; refresh() end)
 	onRefresh(function()
 		local on = S[tbl][key] == true
-		b.BackgroundColor3 = on and color:Lerp(Color3.new(0, 0, 0), 0.55) or INP
-		b.TextColor3 = on and Color3.new(1, 1, 1) or T.muted
-		s.Color = on and color or EDGE
+		b.BackgroundColor3 = on and color:Lerp(Color3.new(0, 0, 0), 0.15) or color:Lerp(INP, 0.82)
+		b.TextColor3 = on and Color3.new(1, 1, 1) or color:Lerp(T.muted, 0.35)
+		s.Color = on and color:Lerp(Color3.new(1, 1, 1), 0.25) or color:Lerp(EDGE, 0.65)
 	end)
 end
 local function chipRow(parent)
@@ -1683,7 +1698,7 @@ bottomBar.BackgroundTransparency = 1; bottomBar.Parent = body
 local runBtn = MakeButton("", T.accent, bottomBar)
 runBtn.Size = UDim2.fromScale(1, 1); runBtn.TextSize = 15; runBtn.Font = Enum.Font.GothamBlack
 runBtn:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 12)
-do local gl = stroke(runBtn, Color3.fromRGB(147, 170, 255)); gl.Transparency = 0.55 end
+do local gl = stroke(runBtn, Color3.fromRGB(147, 170, 255), 2); gl.Transparency = 0.45 end
 -- redraw right away (the main loop may be busy for seconds) and ignore a second click in the same instant,
 -- otherwise a click that looks ignored gets repeated and flips the macro straight back off
 local lastRunClick = 0
@@ -1709,6 +1724,25 @@ do
 		cap.Text = "COPIED!"
 		task.delay(1.5, function() if cap.Parent then cap.Text = "DISCORD" end end)
 	end)
+end
+do -- sidebar info card (Roblox user + version), purely visual
+	local ic = Instance.new("Frame"); ic.AnchorPoint = Vector2.new(0, 1); ic.Size = UDim2.new(1, 0, 0, 58)
+	ic.Position = UDim2.new(0, 0, 1, -46); ic.BackgroundColor3 = Color3.fromRGB(21, 26, 56); ic.BorderSizePixel = 0; ic.Parent = sidebar
+	round(ic, 10); stroke(ic, EDGE); polish(ic, 200)
+	local av = Instance.new("Frame"); av.Size = UDim2.fromOffset(26, 26); av.Position = UDim2.fromOffset(8, 6)
+	av.BackgroundColor3 = Color3.new(1, 1, 1); av.BorderSizePixel = 0; av.Parent = ic; round(av, 13)
+	do local g = Instance.new("UIGradient"); g.Rotation = 45; g.Color = ColorSequence.new(NAV_BLUE, NAV_VIOLET); g.Parent = av end
+	local ini = makeText(av, string.upper(string.sub(player.Name, 1, 1)), 12, Color3.new(1, 1, 1), Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+	ini.Size = UDim2.fromScale(1, 1)
+	local cap = makeText(ic, "ROBLOX USER", 9, T.muted, Enum.Font.GothamBold); cap.Size = UDim2.new(1, -46, 0, 11); cap.Position = UDim2.fromOffset(40, 6)
+	local nm = makeText(ic, player.Name, 12, T.text, Enum.Font.GothamBold); nm.Size = UDim2.new(1, -46, 0, 14); nm.Position = UDim2.fromOffset(40, 18)
+	nm.TextTruncate = Enum.TextTruncate.AtEnd
+	local dv = Instance.new("Frame"); dv.Size = UDim2.new(1, -16, 0, 1); dv.Position = UDim2.fromOffset(8, 36)
+	dv.BackgroundColor3 = EDGE; dv.BorderSizePixel = 0; dv.Parent = ic
+	local vc = makeText(ic, "VERSION", 9, T.muted, Enum.Font.GothamBold); vc.Size = UDim2.new(0.5, 0, 0, 16); vc.Position = UDim2.fromOffset(10, 40)
+	local vb = Instance.new("Frame"); vb.Size = UDim2.fromOffset(44, 16); vb.AnchorPoint = Vector2.new(1, 0); vb.Position = UDim2.new(1, -8, 0, 40)
+	vb.BackgroundColor3 = T.accent; vb.BackgroundTransparency = 0.7; vb.BorderSizePixel = 0; vb.Parent = ic; round(vb, 8)
+	local vt = makeText(vb, "v1.0.0", 10, Color3.fromRGB(190, 200, 255), Enum.Font.GothamBold, Enum.TextXAlignment.Center); vt.Size = UDim2.fromScale(1, 1)
 end
 local unloadBtn
 do
