@@ -22,7 +22,7 @@ local TXT = {
 	host = "HOST A LOBBY", queue = "RANDOM QUEUE", start = "START RUN",
 	attack = "ATTACK", skills = "SKILLS", back = "BACK", path = "CHOOSE YOUR PATH", choose = "MAKE YOUR CHOICE",
 	satchel = "SATCHEL", potion = "HP POTION", ally = "CHOOSE AN ALLY", waitReady = "WAITING FOR READY", invite = "PARTY INVITE",
-	continue = { "RESUME BATTLE", "CONTINUE", "TO BATTLE", "NEXT FLOOR", "NEXT", "CLAIM", "RETURN TO CASTLE" },
+	continue = { "RESUME BATTLE", "CONTINUE", "NEXT FLOOR", "NEXT", "CLAIM", "RETURN TO CASTLE" },
 }
 
 local S = {
@@ -682,7 +682,7 @@ local function step()
 		local again = find(list, "PLAY AGAIN")
 		if again then potionPause = -999; press(again); log("Replay"); return 2 end
 	end
-	do -- path, event and chest each have their own toggle; Auto Next Stage only gates the continue buttons below
+	do -- path, event and chest each have their own toggle; Auto Next Act only gates the continue buttons below
 		-- run map: cards RunMap.Cards.OptionN, each with two rows of 5 star icons (DANGER at y=7, REWARD at y=29). Pick the card whose chosen row is closest to S.pathStars; ties -> leftmost.
 		local sign = S.autoPath and find(list, TXT.path)
 		local cards = sign and sign:FindFirstAncestor("Cards")
@@ -759,6 +759,9 @@ local function step()
 				end
 			end
 		end
+		-- map node screens (path card, camp, event) end on TO BATTLE: part of Next Path, not Next Act
+		local toBattle = S.autoPath and find(list, "TO BATTLE")
+		if toBattle then press(toBattle); log("Click TO BATTLE"); return 1.5 end
 		for _, w in ipairs(S.autoContinue and TXT.continue or {}) do
 			local c = find(list, w)
 			if c then press(c); log("Click " .. w); return 1.5 end
@@ -1681,9 +1684,9 @@ end
 
 -- AUTO PLAY
 do
-	local c = Card(playPage, "Automation", "Next Stage: CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Next Path: picks a map card (stars in Run Map). Replay: PLAY AGAIN.")
+	local c = Card(playPage, "Automation", "Next Act: CONTINUE, NEXT FLOOR, CLAIM. Next Path: map card, camp / event choice, TO BATTLE. Replay: PLAY AGAIN.")
 	pair(c, { "Auto Join", "autoJoin" }, { "Auto Replay", "autoReplay" })
-	pair(c, { "Auto Next Stage", "autoContinue" }, { "Auto Next Path", "autoPath" })
+	pair(c, { "Auto Next Act", "autoContinue" }, { "Auto Next Path", "autoPath" })
 	MakeToggle("Stop at 1 life (safety: no new run, gear is wiped on the last life)", "stopAtLife", c)
 end
 local mpRow
