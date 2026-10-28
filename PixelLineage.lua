@@ -141,6 +141,13 @@ local function buttonOf(g)
 end
 
 local setIdentity = setthreadidentity or set_thread_identity or setidentity
+-- getgc(true) (include tables) errors or is missing on some mobile executors; never let that kill a step
+local function gcTables()
+	if not getgc then return {} end
+	local ok, r = pcall(getgc, true)
+	if not (ok and type(r) == "table") then ok, r = pcall(getgc) end
+	return (ok and type(r) == "table") and r or {}
+end
 local function fireHandlers(b)
 	local fired = false
 	for _, sig in ipairs({ b.MouseButton1Click, b.Activated, b.MouseButton1Down, b.MouseButton1Up }) do
@@ -151,7 +158,8 @@ local function fireHandlers(b)
 			for _, c in ipairs(cs) do
 				task.spawn(function()
 					if setIdentity then pcall(setIdentity, 2) end
-					pcall(c.Fire, c)
+					-- some mobile executors expose only .Function (or a Fire that errors): call the handler directly then
+					if not (c.Fire and pcall(c.Fire, c)) and type(c.Function) == "function" then pcall(c.Function) end
 				end)
 				fired = true
 			end
@@ -164,7 +172,8 @@ end
 local function press(g)
 	if not g then return false end
 	local b = buttonOf(g)
-	if S.clickMode == "Mouse" then pcall(mouseClick, b or g); return true end
+	-- touch-only devices: virtual mouse events steal touch input (screen stops responding), so always background there
+	if S.clickMode == "Mouse" and not (UIS.TouchEnabled and not UIS.KeyboardEnabled) then pcall(mouseClick, b or g); return true end
 	if getconnections and b and fireHandlers(b) then return true end
 	if firesignal and b then
 		pcall(firesignal, b.MouseButton1Click); pcall(firesignal, b.Activated)
@@ -299,7 +308,7 @@ function battleMenu()
 	local m = menuCache
 	if m and type(m.actions) == "table" and type(m.actions.Skill) == "table" and typeof(m.box) == "Instance" and m.box.Parent then return m end
 	menuCache = nil
-	for _, t in ipairs(getgc and getgc(true) or {}) do
+	for _, t in ipairs(gcTables()) do
 		if type(t) == "table" and rawget(t, "foeRows") and type(rawget(t, "actions")) == "table" and type(t._perform) == "function" then
 			menuCache = t
 			break
@@ -383,6 +392,7 @@ end
 local function attackButton()
 	local cmds = pgui:FindFirstChild("PixelCommands", true)
 	local b = cmds and cmds:FindFirstChild("Commands") and cmds.Commands:FindFirstChild("Attack")
+	b = b or (cmds and cmds:FindFirstChild("Attack", true)) -- other layouts (phone) may nest the command buttons deeper
 	return (b and b:IsA("GuiObject") and shown(b)) and b or nil
 end
 
@@ -403,7 +413,7 @@ local lastSell, sellNote = -999, "Auto Sell: idle"
 -- No version field exists; the newest has the most gold (farming and selling only raise it), bag size breaks ties.
 local function gearProfile()
 	local best, bg, bn = nil, -1, -1
-	for _, t in ipairs(getgc and getgc(true) or {}) do
+	for _, t in ipairs(gcTables()) do
 		if type(t) == "table" and type(rawget(t, "gearBag")) == "table" then
 			local n, g = 0, tonumber(rawget(t, "gold")) or 0
 			for _ in pairs(t.gearBag) do n += 1 end
@@ -581,18 +591,21 @@ local function step()
 		local cards = sign and sign:FindFirstAncestor("Cards")
 		if cards then
 			local best, bestDiff, bestN = nil, math.huge, 0
-			local y, want = S.pathBy == "Danger" and 7 or 29, tonumber(S.pathStars) or 3
+			local want = tonumber(S.pathStars) or 3
 			for i = 1, 6 do
 				local card = cards:FindFirstChild("Option" .. i)
 				if card and card.Visible then
-					local n = 0
+					-- star rows = frames holding "Icon" children; DANGER is the upper row, REWARD the lower one.
+					-- Ordered by on-screen Y, not a fixed offset, so scaled phone layouts read the same.
+					local rows = {}
 					for _, row in ipairs(card:GetDescendants()) do
-						-- each star is an "Icon" frame wrapping the drawn sprite named "star" or "starEmpty"
-						if row:IsA("Frame") and row.Position.Y.Offset == y and row:FindFirstChild("Icon") then
-							for _, c in ipairs(row:GetChildren()) do
-								if c.Name == "Icon" and c:FindFirstChild("star", true) and not c:FindFirstChild("starEmpty", true) then n += 1 end
-							end
-						end
+						if row:IsA("Frame") and row:FindFirstChild("Icon") then rows[#rows + 1] = row end
+					end
+					table.sort(rows, function(a, b) return a.AbsolutePosition.Y < b.AbsolutePosition.Y end)
+					local row, n = rows[S.pathBy == "Danger" and 1 or #rows], 0
+					-- each star is an "Icon" frame wrapping the drawn sprite named "star" or "starEmpty"
+					for _, c in ipairs(row and row:GetChildren() or {}) do
+						if c.Name == "Icon" and c:FindFirstChild("star", true) and not c:FindFirstChild("starEmpty", true) then n += 1 end
 					end
 					if math.abs(n - want) < bestDiff then best, bestDiff, bestN = card, math.abs(n - want), n end
 				end
@@ -604,12 +617,15 @@ local function step()
 		if S.autoEvent and find(list, TXT.choose) then
 			local opts, prefer = {}, {}
 			for w in S.eventPrefer:gmatch("[^,]+") do prefer[#prefer + 1] = norm(w) end
+			-- name = the option button's topmost label (on-screen Y, so scaled phone layouts work too)
+			local top, eventGui = {}, find(list, TXT.choose):FindFirstAncestorWhichIsA("ScreenGui")
 			for _, e in ipairs(list) do
 				local b = e[2].Parent
-				if e[2].Position.Y.Offset == 8 and b:IsA("TextButton") and b.Text == "" and b.BackgroundTransparency < 0.5 then
-					opts[#opts + 1] = { e[1], b }
+				if b:IsA("TextButton") and b.Text == "" and b.BackgroundTransparency < 0.5 and b:IsDescendantOf(eventGui) then
+					if not top[b] or e[2].AbsolutePosition.Y < top[b][2].AbsolutePosition.Y then top[b] = e end
 				end
 			end
+			for b, e in pairs(top) do opts[#opts + 1] = { e[1], b } end
 			-- HP on the run map: the PARTY slot's "<hp>/<max>" label. Offer Blood costs 20% HP, so it is skipped below the floor.
 			local hpPct
 			local rm = pgui:FindFirstChild("PlatformBattlesRunMap")
@@ -717,7 +733,10 @@ end)
 -- are hooked once per VM and divided by getgenv().NCL_SPEED. QTE timing reads os.clock / GetServerTimeNow and is
 -- not touched, so perfect presses stay exact.
 local function speed() return (getgenv and getgenv().NCL_SPEED) or 1 end
-if getgenv and not getgenv().NCL_SPEED_HOOKED and hookfunction and newcclosure then
+-- installed only once a speed above 1x is picked: on some mobile executors a hooked task.wait can't yield, so 1x
+-- must leave the game's waits untouched
+local function installSpeedHooks()
+	if not (getgenv and not getgenv().NCL_SPEED_HOOKED and hookfunction and newcclosure) then return end
 	getgenv().NCL_SPEED_HOOKED = true
 	-- only the game's own waits: this script's short "press, let the UI react, rescan" pauses stay real-time
 	local function scaled(t)
@@ -735,7 +754,7 @@ if getgenv and not getgenv().NCL_SPEED_HOOKED and hookfunction and newcclosure t
 	pcall(function()
 		local old
 		old = hookmetamethod(game, "__namecall", newcclosure(function(self, info, ...)
-			if speed() ~= 1 and self == TweenService and typeof(info) == "TweenInfo" and not checkcaller() and getnamecallmethod() == "Create" then
+			if speed() ~= 1 and self == TweenService and typeof(info) == "TweenInfo" and not (checkcaller and checkcaller()) and getnamecallmethod() == "Create" then
 				local s = speed()
 				-- rebuilt TweenInfo; reading/constructing here is not a namecall, so the method above stays "Create"
 				local ti = TweenInfo.new(info.Time / s, info.EasingStyle, info.EasingDirection, info.RepeatCount, info.Reverses, info.DelayTime / s)
@@ -745,6 +764,7 @@ if getgenv and not getgenv().NCL_SPEED_HOOKED and hookfunction and newcclosure t
 		end))
 	end)
 end
+if speed() > 1 then installSpeedHooks() end
 
 ---------------------------------------------------------------- AUTO QTE
 -- Hooks the game's PixelQTE class (found in GC, shared by every instance through __index) and presses its own
@@ -754,7 +774,7 @@ end
 -- Defense: graded on the server from pressedAt; perfect at startedAt + target * duration (+-32ms).
 local qte = getgenv and getgenv().NCL_PL_QTE
 if not qte and getgc then
-	for _, t in ipairs(getgc(true)) do
+	for _, t in ipairs(gcTables()) do
 		if type(t) == "table" and rawget(t, "_defense") and rawget(t, "_timedMarks") and rawget(t, "_send") then qte = t; break end
 	end
 end
@@ -1776,6 +1796,7 @@ refresh = function()
 	for _, f in ipairs(refreshers) do f() end
 	if qte then qte.nclOn, qte.nclHide = S.autoQTE, S.autoQTE and S.hideQTE end
 	if getgenv then getgenv().NCL_SPEED = tonumber(S.gameSpeed:match("%d+")) or 1 end
+	if speed() > 1 then installSpeedHooks() end
 	if skillsDirty then skillsDirty = false; renderSkills() end
 	if S.autoSave and HttpService:JSONEncode(S) ~= saved then saveConfig() end
 	mpRow.Visible = S.mode == "Multiplayer"
