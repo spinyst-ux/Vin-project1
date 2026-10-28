@@ -32,7 +32,7 @@ local S = {
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
 	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x", autoSlot = false, slotNum = "1",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
-	webhook = "", pingId = "", hookClear = true, hookDeath = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
+	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
 }
 -- Config (RUN included) survives the teleport into each run: workspace/NCL HUB/PixelLineage/config.json.
 local HttpService = game:GetService("HttpService")
@@ -187,11 +187,25 @@ end
 -- After ATTACK / a skill the game may ask for a target. Foe rows live in the command menu's FoesPage
 -- (FoeN.Pick, hidden but wired); their handler ignores presses outside target mode, so firing is safe.
 -- Picks the row whose name contains Target, else the first foe.
+local syncSkills, battleMenu, pickIn
 local function pickTarget()
 	if not S.autoTarget then return end
-	task.wait(0.3)
-	local page = pgui:FindFirstChild("FoesPage", true)
-	if not page then return end
+	-- retried: on slow devices target mode opens later than 0.3s, and the first FoesPage in PlayerGui can be a stale
+	-- copy, so the live battle menu's own box is searched first
+	-- the Pick handler ignores presses until target mode ("CHOOSE A FOE") is open, so fire only while it shows
+	local picked = false
+	for _ = 1, 12 do
+		task.wait(0.25)
+		if find(scan(), "CHOOSE A FOE") then
+			local m = battleMenu and battleMenu()
+			local page = (m and m.box:FindFirstChild("FoesPage", true)) or pgui:FindFirstChild("FoesPage", true)
+			if page then picked = pickIn(page) or picked end
+		elseif picked then
+			return
+		end
+	end
+end
+function pickIn(page)
 	local want, first, hit = norm(S.targetName), nil, nil
 	for _, row in ipairs(page:GetDescendants()) do
 		local pick = row:IsA("Frame") and row.Name:match("^Foe%d") and row:FindFirstChild("Pick")
@@ -212,7 +226,7 @@ local function pickTarget()
 		end
 	end
 	local row = hit or first
-	if row and fireHandlers(row.Pick) then log("Target: " .. row.Name) end
+	if row and fireHandlers(row.Pick) then log("Target: " .. row.Name); return true end
 end
 
 ---------------------------------------------------------------- WEBHOOK
@@ -267,7 +281,7 @@ end
 -- Skill list as the game shows it after SKILLS: each row holds a name label and either "<n> EN" or "CD <n>";
 -- the header reads "SKILLS EN <cur>/<max>". New names join S.skills (the priority list) at the bottom, enabled.
 local skillsDirty = true
-local syncSkills, battleMenu
+-- syncSkills / battleMenu are declared above pickTarget
 local function readSkills(list)
 	local en = 0
 	for _, e in ipairs(list) do local v = e[1]:match("^SKILLS EN (%d+)") if v then en = tonumber(v) end end
@@ -457,6 +471,34 @@ local function sellPass(manual)
 	return #uids
 end
 
+-- Torment tier: the TORMENT button reads "TORMENT <roman>", stepped with the "<" / ">" buttons beside it.
+local function roman(s)
+	local v, n, prev = { I = 1, V = 5, X = 10, L = 50, C = 100, D = 500, M = 1000 }, 0, 0
+	for i = #s, 1, -1 do
+		local d = v[s:sub(i, i)] or 0
+		n += d < prev and -d or d
+		prev = math.max(prev, d)
+	end
+	return n
+end
+local function pickTorment()
+	local want = tonumber(S.tormentStage)
+	if not want or want < 1 then return end
+	for _ = 1, 120 do
+		local btn = find(scan(), "TORMENT")
+		if not btn then return end
+		local cur = roman(norm(btn.Text):match("TORMENT ([IVXLCDM]+)") or "")
+		if cur == want or cur == 0 then return end
+		local root, arrow = btn.Parent and btn.Parent.Parent or pgui, nil
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("TextButton") and d.Text:match("^%s*" .. (cur < want and ">" or "<") .. "%s*$") and shown(d) then arrow = d; break end
+		end
+		if not arrow then log("Torment arrows not found"); return end
+		press(arrow); task.wait(0.15)
+	end
+end
+
+local chestSent
 local function step()
 	local list = scan()
 	reportEnd(list)
@@ -527,6 +569,7 @@ local function step()
 		-- Picking a difficulty re-renders the window: every button found before it is destroyed, so re-scan.
 		local function pickDiff()
 			press(find(list, S.difficulty:upper())); task.wait(0.4)
+			if S.difficulty == "Torment" then pickTorment() end
 			return scan()
 		end
 		-- own lobby (START RUN (n/max) or WAITING FOR READY): invite the listed players every 20s, and with Wait for
@@ -658,6 +701,18 @@ local function step()
 		if S.autoChest then
 			for _, e in ipairs(list) do
 				if e[2]:IsA("TextButton") and (e[1]:match("TO OPEN$") or e[1]:match("TO CONTINUE$")) then
+					-- "TO CONTINUE" = loot revealed: post everything shown on that panel once
+					if e[1]:match("TO CONTINUE$") and S.hookChest and chestSent ~= e[2] then
+						chestSent = e[2]
+						local box, lines = e[2].Parent and e[2].Parent.Parent or e[2], {}
+						for _, l in ipairs(list) do
+							if l[2]:IsDescendantOf(box) and l[2] ~= e[2] and #lines < 20 then lines[#lines + 1] = "• " .. l[2].Text:gsub("<[^>]->", "") end
+						end
+						task.spawn(function()
+							local ok, info = webhook("Chest opened", lines, 0xF5B942)
+							log("Webhook chest: " .. (ok and "sent" or info))
+						end)
+					end
 					press(e[2]); log("Chest: " .. e[1]); return 1
 				end
 			end
@@ -1514,8 +1569,8 @@ end
 
 -- AUTO PLAY
 do
-	local c = Card(playPage, "Automation", "Joins runs and clicks through result / continue screens.")
-	pair(c, { "Auto Join", "autoJoin" }, { "Auto Continue", "autoContinue" })
+	local c = Card(playPage, "Automation", "Joins runs. Next / Retry clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM, PLAY AGAIN.")
+	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next / Retry", "autoContinue" })
 end
 local mpRow
 do
@@ -1523,6 +1578,7 @@ do
 	MakeDropdown("Mode", "mode", { { "Solo", "🧍" }, { "Multiplayer", "👥" } }, c)
 	mpRow = MakeDropdown("Multiplayer", "mpMode", { { "Host", "🏠" }, { "Queue", "🎲" } }, c)
 	MakeDropdown("Difficulty", "difficulty", { { "Normal", "🟢" }, { "Hard", "🟡" }, { "Nightmare", "🔴" }, { "Torment", "🟣" } }, c)
+	MakeInput("Torment stage number (e.g. 35 = XXXV, empty = keep)", "tormentStage", c)
 	MakeDropdown("Click with", "clickMode", { { "Background", "👻" }, { "Mouse", "🖱️" } }, c)
 end
 do
@@ -1692,6 +1748,7 @@ end
 do
 	local c = Card(hookPage, "Send when", "Each is sent once per result screen.")
 	pair(c, { "Run finished", "hookClear" }, { "Died", "hookDeath" })
+	MakeToggle("Chest loot (every chest opened)", "hookChest", c)
 end
 do
 	local c = Card(hookPage, "Ping", "Mentioned in every message.")
