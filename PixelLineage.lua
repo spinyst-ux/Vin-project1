@@ -92,14 +92,28 @@ local function shown(g)
 end
 
 -- One pass over PlayerGui: list of { text, instance } for every visible label/button.
+-- Walks only visible branches: hidden windows (thousands of instances) are skipped whole instead of every descendant
+-- being listed and then checked up its ancestor chain - that per-poll cost was the stutter on slower executors.
 local function scan()
 	local list = {}
-	for _, d in ipairs(pgui:GetDescendants()) do
-		if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= "" and not (gui and d:IsDescendantOf(gui)) then
-			local t = norm(d.Text)
-			if t ~= "" and shown(d) then list[#list + 1] = { t, d } end
+	local function walk(o)
+		for _, d in ipairs(o:GetChildren()) do
+			if d:IsA("GuiObject") then
+				if d.Visible then
+					if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= "" and d.AbsoluteSize.X >= 2 and d.AbsoluteSize.Y >= 2 then
+						local t = norm(d.Text)
+						if t ~= "" then list[#list + 1] = { t, d } end
+					end
+					walk(d)
+				end
+			elseif d:IsA("LayerCollector") then
+				if d.Enabled and d ~= gui then walk(d) end
+			elseif not d:IsA("GuiBase") then
+				walk(d) -- Folders and the like between GUI objects
+			end
 		end
 	end
+	walk(pgui)
 	return list
 end
 
@@ -895,20 +909,25 @@ if qte then
 					local cap = os.clock() + 0.13
 					while clock() < target and os.clock() < cap do end
 				end
-				-- GetServerTimeNow can stay frozen for the whole frame on some executors (the spin then ran its full cap
-				-- and the press reached the server ~20ms+ late while the log said +1ms): convert the target to os.clock,
-				-- which always advances, and aim PRESS_LEAD early so the press lands inside the ±18ms window
-				local PRESS_LEAD = 0.010
+				-- target is converted to os.clock once per frame (os.clock always advances, so the spin ends on time).
+				-- Server grade: |pressedAt - (startedAt + target * duration)| <= perfect gives "Dodge"; its EARLY / LATE
+				-- tag is only the side. Block / Miss are what cost HP.
+				local PRESS_LEAD = 0 -- server grade = |pressedAt - (startedAt + target*duration)| <= perfect: aim dead centre
 				local now, clock0 = Workspace:GetServerTimeNow(), os.clock()
 				local function onClock(t) return clock0 + (t - now) - PRESS_LEAD end
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
-				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
+				-- spin only when the target falls before the next frame (measured frame time), not 120ms ahead: the old
+				-- fixed lead froze up to 120ms per press, which stutters at low fps
+				local dt = self.nclLastStep and (clock0 - self.nclLastStep) or 0.12
+				self.nclLastStep = clock0
+				local win = math.clamp(dt * 1.25 + 0.004, 0.02, 0.12)
+				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - PRESS_LEAD - win then
 					self.nclPressAt = nil
 					local ct = onClock(at)
 					spinUntil(ct, os.clock)
 					if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, os.clock() - ct - PRESS_LEAD)
-				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
+				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - PRESS_LEAD - win then
 					-- barrage: one press per strike, in order
 					local ct = onClock(table.remove(hits, 1))
 					spinUntil(ct, os.clock)
@@ -980,7 +999,7 @@ if qte then
 end
 
 ---------------------------------------------------------------- DEBUG FILE + ANTI-AFK
--- NCL HUB/PixelLineage/debug.txt, rewritten every 3s: visible texts, the button behind each, and the log.
+-- NCL HUB/PixelLineage/debug.txt, rewritten every 15s (file writes hitch some executors): visible texts, the button behind each, and the log.
 if writefile then
 	task.spawn(function()
 		while alive do
@@ -1000,7 +1019,7 @@ if writefile then
 				ensureDir()
 				writefile(DIR .. "/debug.txt", table.concat(out, "\n"))
 			end)
-			task.wait(3)
+			task.wait(15)
 		end
 	end)
 end
@@ -1611,9 +1630,9 @@ end
 
 -- AUTO PLAY
 do
-	local c = Card(playPage, "Automation", "Next Stage clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Replay clicks PLAY AGAIN. Path is in Run Map.")
-	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next Stage", "autoContinue" })
-	MakeToggle("Auto Replay", "autoReplay", c)
+	local c = Card(playPage, "Automation", "Next Stage: CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Next Path: picks a map card (stars in Run Map). Replay: PLAY AGAIN.")
+	pair(c, { "Auto Join", "autoJoin" }, { "Auto Replay", "autoReplay" })
+	pair(c, { "Auto Next Stage", "autoContinue" }, { "Auto Next Path", "autoPath" })
 end
 local mpRow
 do
@@ -1696,7 +1715,7 @@ end
 -- RUN MAP
 do
 	local c = Card(mapPage, "Path", "Picks the card whose stars are closest to your choice; ties go left.")
-	MakeToggle("Auto Path", "autoPath", c)
+	MakeToggle("Auto Next Path", "autoPath", c)
 	MakeDropdown("Pick by", "pathBy", { { "Reward", "💰" }, { "Danger", "💀" } }, c)
 	MakeDropdown("Stars", "pathStars", { { "1", "⭐" }, { "2", "⭐⭐" }, { "3", "⭐⭐⭐" }, { "4", "⭐⭐⭐⭐" }, { "5", "⭐⭐⭐⭐⭐" } }, c)
 end
