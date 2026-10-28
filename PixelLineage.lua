@@ -32,7 +32,7 @@ local S = {
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
 	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x", autoSlot = false, slotNum = "1",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
-	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
+	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift", dodgeLead = 0,
 }
 -- Config (RUN included) survives the teleport into each run: workspace/NCL HUB/PixelLineage/config.json.
 local HttpService = game:GetService("HttpService")
@@ -253,21 +253,34 @@ local httpRequest = (syn and syn.request) or http_request or request or (http an
 local runsDone, sessionStart = 0, os.time()
 
 local function webhook(title, lines, color)
-	if S.webhook == "" then return false, "no webhook URL" end
+	local url = S.webhook:match("^%s*(.-)%s*$")
+	if url == "" then return false, "no webhook URL" end
 	if not httpRequest then return false, "executor has no request()" end
+	-- Discord rejects an empty description and anything over 4096 chars; game texts carry <font> rich-text tags
+	local desc = table.concat(lines, "\n"):gsub("<[^>]->", "")
+	if desc:match("^%s*$") then desc = "-" end
 	local body = {
 		username = "NCL HUB",
 		embeds = { {
-			title = title, description = table.concat(lines, "\n"), color = color or 0x485CEB,
+			title = tostring(title):gsub("<[^>]->", ""):sub(1, 250), description = desc:sub(1, 4000), color = color or 0x485CEB,
 			footer = { text = "Pixel Lineage | " .. player.Name }, timestamp = DateTime.now():ToIsoDate(),
 		} },
 	}
 	if S.pingId ~= "" then body.content = S.pingId:match("^%d+$") and ("<@" .. S.pingId .. ">") or S.pingId end
-	local ok, res = pcall(httpRequest, {
-		Url = S.webhook, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(body),
-	})
+	local ok, res
+	for _ = 1, 3 do
+		ok, res = pcall(httpRequest, {
+			Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(body),
+		})
+		-- 429 = rate limited (several chests in a row): wait what Discord asks, then retry
+		if not (ok and type(res) == "table" and tonumber(res.StatusCode) == 429) then break end
+		local wait = 2
+		pcall(function() wait = tonumber(HttpService:JSONDecode(res.Body).retry_after) or 2 end)
+		task.wait(math.clamp(wait, 0.5, 10))
+	end
 	if not ok or type(res) ~= "table" then return false, tostring(res) end
 	local code = tonumber(res.StatusCode) or 0
+	if code >= 400 then return false, "HTTP " .. code .. " " .. tostring(res.Body):sub(1, 120) end
 	return code >= 200 and code < 300, "HTTP " .. code
 end
 
@@ -725,7 +738,7 @@ local function step()
 		if S.autoChest then
 			for _, e in ipairs(list) do
 				if e[2]:IsA("TextButton") and (e[1]:match("TO OPEN$") or e[1]:match("TO CONTINUE$")) then
-					press(e[2]); log("Chest: " .. e[1]); return 1
+					press(e[2]); log("Chest: " .. e[1]); return 0.3 -- tap through the reveal animation
 				end
 			end
 		end
@@ -736,7 +749,7 @@ local function step()
 	end
 
 	status = "Waiting..."
-	return 0.2 -- poll fast: the turn menu / next screen is acted on as soon as it shows
+	return 0.3 -- poll fast: the turn menu / next screen is acted on as soon as it shows (one scan ~8ms on a busy screen)
 end
 
 task.spawn(function()
@@ -755,6 +768,7 @@ end)
 -- One line per enemy attack: what the server asked (normal / heavy / barrage), when we pressed vs the target (ms),
 -- the server's verdict and any damage that still landed. Shown in the Logs tab, kept in DIR/defense_log.txt.
 local dlogLines, dlogPending = {}, {}
+local pressLead = tonumber(S.dodgeLead) or 0 -- seconds to press before the perfect moment; tuned live from the server verdicts, kept in the config across teleports
 local function dlog(line)
 	table.insert(dlogLines, 1, os.date("%H:%M:%S") .. "  " .. line)
 	if #dlogLines > 80 then table.remove(dlogLines) end
@@ -789,10 +803,21 @@ task.spawn(function()
 						end
 					end
 				end
-				walk(d, "", 0)
+				-- BossChestLoot: { items = { { name = "10080 Gold", rarity = "Rare", kind, gearKind?, quantity? }, ... } }
+				if type(d.items) == "table" and #d.items > 0 then
+					local icon = { Common = "⚪", Uncommon = "🟢", Rare = "🔵", Epic = "🟣", Legendary = "🟠", Mythic = "🔴" }
+					for _, it in ipairs(d.items) do
+						if type(it) == "table" and #lines < 25 then
+							local extra = it.gearKind and (" · " .. tostring(it.gearKind)) or ""
+							lines[#lines + 1] = ("%s **%s** — %s%s"):format(icon[it.rarity] or "▫️", tostring(it.name or it.id or "?"), tostring(it.rarity or "?"), extra)
+						end
+					end
+				else
+					walk(d, "", 0)
+				end
 				dlog("CHEST " .. name .. " " .. HttpService:JSONEncode(d):sub(1, 400))
 				task.spawn(function()
-					local ok, info = webhook("Chest opened (" .. name .. ")", lines, 0xF5B942)
+					local ok, info = webhook(name == "BossChestLoot" and "🎁 Boss chest opened" or ("🎁 " .. name), lines, 0xF5B942)
 					log("Webhook chest: " .. (ok and "sent" or info))
 				end)
 			end
@@ -804,8 +829,15 @@ task.spawn(function()
 				local p = dlogPending[tostring(d.token)]
 				dlogPending[tostring(d.token)] = nil
 				local res = d.outcome and tostring(d.outcome) or (type(d.outcomes) == "table" and table.concat(d.outcomes, ",") or "?")
-				dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s)"):format(p and p.kind or "?", p and p.what or "?",
-					p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or "")))
+				-- adaptive lead: the server clamps pressedAt up to (arrival - credit), so how early to press depends on
+				-- ping and frame time. Nudge toward the centre from every verdict (EARLY -> later, LATE -> sooner).
+				local why = tostring(d.reason or ""):upper()
+				local step = (res:find("Miss") or res:find("Block")) and 0.010 or 0.003
+				if why:find("LATE") then pressLead = math.min(pressLead + step, 0.08)
+				elseif why:find("EARLY") then pressLead = math.max(pressLead - step, -0.03) end
+				S.dodgeLead = pressLead
+				dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s) | lead %dms"):format(p and p.kind or "?", p and p.what or "?",
+					p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or ""), math.floor(pressLead * 1000 + 0.5)))
 			elseif name == "CombatVFX" and d.kind == "DamageIndicator" and d.targetUserId == player.UserId and (tonumber(d.amount) or 0) > 0 and not d.healing then
 				dlog(("!! HIT %s for %s%s%s"):format(tostring(d.actionName or "?"), tostring(d.amount), d.critical and " CRIT" or "", d.dot and " (DoT)" or ""))
 			end
@@ -912,15 +944,15 @@ if qte then
 				-- target is converted to os.clock once per frame (os.clock always advances, so the spin ends on time).
 				-- Server grade: |pressedAt - (startedAt + target * duration)| <= perfect gives "Dodge"; its EARLY / LATE
 				-- tag is only the side. Block / Miss are what cost HP.
-				local PRESS_LEAD = 0 -- server grade = |pressedAt - (startedAt + target*duration)| <= perfect: aim dead centre
+				local PRESS_LEAD = pressLead -- adaptive, see pressLead
 				local now, clock0 = Workspace:GetServerTimeNow(), os.clock()
 				local function onClock(t) return clock0 + (t - now) - PRESS_LEAD end
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
-				-- spin only when the target falls before the next frame (measured frame time), not 120ms ahead: the old
-				-- fixed lead froze up to 120ms per press, which stutters at low fps
+				-- spin from about one frame before the target (60..120ms, from the measured frame time); the old fixed
+				-- 120ms lead stuttered at low fps, a one-frame lead missed whenever the game hitched right before the hit
 				local dt = self.nclLastStep and (clock0 - self.nclLastStep) or 0.12
 				self.nclLastStep = clock0
-				local win = math.clamp(dt * 1.25 + 0.004, 0.02, 0.12)
+				local win = math.clamp(dt * 1.25 + 0.004, 0.06, 0.12) -- >= 60ms: a frame hitch right before the moment otherwise lands the press 150ms+ late
 				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - PRESS_LEAD - win then
 					self.nclPressAt = nil
 					local ct = onClock(at)
@@ -1930,17 +1962,108 @@ end
 switchTab(1)
 refresh()
 
-local minimized = false
-minimizeBtn.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	body.Visible = not minimized
+-- MINIMIZE: the window shrinks and fades away, a small NCL icon pops in (drag it anywhere, tap / click to reopen).
+-- Its gradient ring spins slowly and the dot pulses green while the macro runs.
+local mini = Instance.new("TextButton")
+mini.Name = "NCLMiniIcon"; mini.Size = UDim2.fromOffset(64, 64); mini.AnchorPoint = Vector2.new(0.5, 0.5)
+mini.Position = UDim2.new(0, 70, 0.5, 0); mini.BackgroundTransparency = 1; mini.Text = ""; mini.AutoButtonColor = false
+mini.Visible = false; mini.ZIndex = 50; mini.Parent = gui
+local miniScale = Instance.new("UIScale"); miniScale.Parent = mini
+local ring = Instance.new("Frame")
+ring.Size = UDim2.fromScale(1, 1); ring.BackgroundColor3 = Color3.new(1, 1, 1); ring.BorderSizePixel = 0; ring.ZIndex = 50; ring.Parent = mini
+round(ring, 18)
+local ringGrad = Instance.new("UIGradient")
+ringGrad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, T.accent), ColorSequenceKeypoint.new(0.5, T.accent2), ColorSequenceKeypoint.new(1, T.pink) })
+ringGrad.Parent = ring
+local tile = Instance.new("Frame")
+tile.AnchorPoint = Vector2.new(0.5, 0.5); tile.Position = UDim2.fromScale(0.5, 0.5); tile.Size = UDim2.new(1, -6, 1, -6)
+tile.BorderSizePixel = 0; tile.BackgroundColor3 = Color3.new(1, 1, 1); tile.ZIndex = 51; tile.Parent = mini
+round(tile, 16)
+do local g = Instance.new("UIGradient"); g.Rotation = 45; g.Color = ColorSequence.new(Color3.fromRGB(22, 28, 61), Color3.fromRGB(10, 14, 26)); g.Parent = tile end
+local miniMark = makeText(tile, "NCL", 19, Color3.new(1, 1, 1), Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
+miniMark.Size = UDim2.fromScale(1, 1); miniMark.ZIndex = 52
+do local g = Instance.new("UIGradient"); g.Color = ringGrad.Color; g.Parent = miniMark end
+local miniDot = Instance.new("Frame")
+miniDot.AnchorPoint = Vector2.new(1, 0); miniDot.Position = UDim2.new(1, 2, 0, -2); miniDot.Size = UDim2.fromOffset(14, 14)
+miniDot.BackgroundColor3 = T.muted; miniDot.BorderSizePixel = 0; miniDot.ZIndex = 53; miniDot.Parent = mini
+round(miniDot, 7); stroke(miniDot, T.bg, 2)
+
+local minimized, hideToken, restScale = false, 0, uiScale.Scale
+local function setMinimized(state)
+	minimized = state
+	hideToken += 1
+	local token = hideToken
 	closePopup()
-	tween(main, 0.25, { Size = UDim2.fromOffset(W, minimized and 80 or H) })
+	if state then
+		restScale = uiScale.Scale
+		tween(uiScale, 0.18, { Scale = restScale * 0.85 }, Enum.EasingStyle.Quad)
+		local veil = Instance.new("Frame")
+		veil.Size = UDim2.fromScale(1, 1); veil.BackgroundColor3 = T.bg; veil.BackgroundTransparency = 1
+		veil.BorderSizePixel = 0; veil.ZIndex = 100; veil.Parent = main
+		round(veil, 14)
+		tween(veil, 0.18, { BackgroundTransparency = 0 })
+		task.delay(0.2, function()
+			veil:Destroy()
+			if hideToken ~= token then return end
+			main.Visible = false; uiScale.Scale = restScale
+			mini.Visible = true; miniScale.Scale = 0.2
+			tween(miniScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+		end)
+	else
+		tween(miniScale, 0.15, { Scale = 0.2 }, Enum.EasingStyle.Quad)
+		task.delay(0.15, function()
+			if hideToken ~= token then return end
+			mini.Visible = false
+			main.Visible = true; uiScale.Scale = restScale
+			popIn()
+		end)
+	end
+end
+minimizeBtn.MouseButton1Click:Connect(function() setMinimized(true) end)
+
+-- icon drag (mouse + touch): a press that moves less than 5px is a click and reopens the window
+local miniFrom, miniStart, miniMoved
+mini.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		miniFrom, miniStart, miniMoved = input.Position, mini.Position, false
+		tween(miniScale, 0.1, { Scale = 0.92 })
+		local c
+		c = input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				c:Disconnect(); miniFrom = nil
+				tween(miniScale, 0.15, { Scale = 1 }, Enum.EasingStyle.Back)
+				if not miniMoved then setMinimized(false) end
+			end
+		end)
+	end
+end)
+mini.MouseEnter:Connect(function() if not miniFrom then tween(miniScale, 0.15, { Scale = 1.08 }) end end)
+mini.MouseLeave:Connect(function() if not miniFrom then tween(miniScale, 0.15, { Scale = 1 }) end end)
+local miniDragConn = UIS.InputChanged:Connect(function(input)
+	if miniFrom and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - miniFrom
+		if d.Magnitude > 5 then miniMoved = true end
+		if miniMoved then mini.Position = UDim2.new(miniStart.X.Scale, miniStart.X.Offset + d.X, miniStart.Y.Scale, miniStart.Y.Offset + d.Y) end
+	end
+end)
+-- ring spin + status pulse, only while the icon is on screen
+local miniAnimConn = RunService.Heartbeat:Connect(function()
+	if not mini.Visible then return end
+	local t = os.clock()
+	ringGrad.Rotation = (t * 60) % 360
+	if S.running then
+		miniDot.BackgroundColor3 = T.green
+		miniDot.BackgroundTransparency = 0.25 + 0.25 * math.sin(t * 4)
+	else
+		miniDot.BackgroundColor3 = T.muted; miniDot.BackgroundTransparency = 0
+	end
 end)
 
 local keyConn = UIS.InputBegan:Connect(function(input, typing)
 	if typing then return end
-	if input.KeyCode.Name == S.uiKey then
+	if input.KeyCode.Name == S.uiKey and minimized then
+		setMinimized(false)
+	elseif input.KeyCode.Name == S.uiKey then
 		main.Visible = not main.Visible
 		if main.Visible then popIn() else closePopup() end
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and popup.Visible then
@@ -1957,6 +2080,7 @@ local function destroy()
 	if qte then qte.nclOn = false end
 	if getgenv then getgenv().NCL_SPEED = 1 end
 	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect(); stateConn:Disconnect(); reconnectConn:Disconnect()
+	miniDragConn:Disconnect(); miniAnimConn:Disconnect()
 	gui:Destroy()
 end
 closeBtn.MouseButton1Click:Connect(destroy)
