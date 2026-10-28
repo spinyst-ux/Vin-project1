@@ -960,6 +960,14 @@ if qte then
 			if qte.nclOn and name == "ThiefSlashResult" and type(data) == "table" and (self.nclPips or 0) > 0 then
 				data.hits = math.max(tonumber(data.hits) or 0, self.nclPips)
 			end
+			-- Defense presses carry pressedAt = the exact perfect moment instead of whatever the clock read on the frame
+			-- that pressed. The server accepts a claimed time up to (2 x ping + 80ms, max 300ms) older than the packet,
+			-- so a frame hitch or slow send no longer turns a perfect into TOO LATE (low-fps executors).
+			if qte.nclOn and name == "DefenseTimingInput" and type(data) == "table" and self.nclAim then
+				local now = Workspace:GetServerTimeNow()
+				if now >= self.nclAim - 0.05 and now <= self.nclAim + 0.3 then data.pressedAt = self.nclAim end
+				self.nclAim = nil
+			end
 			if name == "ThiefSlashResult" and type(data) == "table" then dlog(("ATK QTE: %s / %s hits sent"):format(tostring(data.hits), tostring(self.nclPips))) end
 			return send(self, name, data, ...)
 		end
@@ -979,13 +987,13 @@ if qte then
 				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
 					self.nclPressAt = nil
 					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
-					if self.pressHandler then self.pressHandler() end
+					self.nclAim = at; if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
 				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
 					-- barrage: one press per strike, in order
 					local t = table.remove(hits, 1)
 					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
-					if self.pressHandler then self.pressHandler() end
+					self.nclAim = t; if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - t)
 				elseif m and m.at and os.clock() >= m.at - 0.05 then
 					local t = m.at
