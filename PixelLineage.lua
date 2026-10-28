@@ -536,6 +536,12 @@ local function step()
 	-- "UNFINISHED BATTLE" after a reconnect: go back into the fight before anything else (castle SET OUT is also on screen)
 	local resume = find(list, "RESUME BATTLE")
 	if resume then press(resume); log("Resume battle"); return 3 end
+	-- death panel (PixelDeath.Fallen): RETURN HOME costs the light already lost; CheatDeath is a paid revive, never pressed
+	do
+		local fallen = pgui:FindFirstChild("PixelDeath")
+		local home = fallen and fallen:FindFirstChild("ReturnHome", true)
+		if home and shown(home) and S.autoContinue then press(home); log("Fallen: return home"); return 3 end
+	end
 	-- character select: main menu CHARACTER SELECT -> SlotN's ENTER. Only ENTER is pressed; locked slots say UNLOCK (Robux)
 	if S.autoSlot then
 		local gate = pgui:FindFirstChild("PlatformBattlesUI") and pgui.PlatformBattlesUI:FindFirstChild("Root")
