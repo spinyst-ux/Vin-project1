@@ -32,7 +32,7 @@ local S = {
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
 	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x", autoSlot = false, slotNum = "1",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
-	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift", dodgeLead = 0,
+	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", stopAtLife = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
 }
 -- Config (RUN included) survives the teleport into each run: workspace/NCL HUB/PixelLineage/config.json.
 local HttpService = game:GetService("HttpService")
@@ -530,6 +530,9 @@ local function pickTorment()
 	end
 end
 
+-- lives come with every BattleUpdated (d.lives); losing the last one wipes the character's gear
+local livesLeft
+local function lowLives() return S.stopAtLife and livesLeft ~= nil and livesLeft <= 1 end
 local function step()
 	local list = scan()
 	reportEnd(list)
@@ -602,6 +605,14 @@ local function step()
 		return 1.5
 	end
 
+	if S.autoJoin and lowLives() then
+		-- one life left: no new run. Stops once back in the castle (a run already going is still played out)
+		if find(list, TXT.setOut) or find(list, TXT.solo) or find(list, TXT.start) then
+			S.running = false; log(("Stopped: %d life left (safety)"):format(livesLeft))
+			task.spawn(webhook, "⚠️ Macro stopped", { ("Only **%d** life left - stopped before a new run so the gear is not wiped."):format(livesLeft) }, 0xF02D64)
+		end
+		return 1
+	end
 	if S.autoJoin then
 		-- Picking a difficulty re-renders the window: every button found before it is destroyed, so re-scan.
 		local function pickDiff()
@@ -667,7 +678,7 @@ local function step()
 	end
 
 	-- Auto Replay: PLAY AGAIN on the run-end screen (off = Auto Next falls back to RETURN TO CASTLE)
-	if S.autoReplay then
+	if S.autoReplay and not lowLives() then
 		local again = find(list, "PLAY AGAIN")
 		if again then potionPause = -999; press(again); log("Replay"); return 2 end
 	end
@@ -774,7 +785,6 @@ end)
 -- One line per enemy attack: what the server asked (normal / heavy / barrage), when we pressed vs the target (ms),
 -- the server's verdict and any damage that still landed. Shown in the Logs tab, kept in DIR/defense_log.txt.
 local dlogLines, dlogPending = {}, {}
-local pressLead = tonumber(S.dodgeLead) or 0 -- seconds to press before the perfect moment; tuned live from the server verdicts, kept in the config across teleports
 local function dlog(line)
 	table.insert(dlogLines, 1, os.date("%H:%M:%S") .. "  " .. line)
 	if #dlogLines > 80 then table.remove(dlogLines) end
@@ -796,6 +806,7 @@ task.spawn(function()
 	if state then
 		stateConn = state.OnClientEvent:Connect(function(name, d)
 			if type(d) ~= "table" then return end
+			if type(d.lives) == "number" then livesLeft = d.lives end
 			-- chest loot straight from the server event (BossChestLoot, ...): same on PC and phone, no screen reading.
 			-- Payload shape isn't fixed, so every string/number leaf is posted as "path: value".
 			if S.hookChest and type(name) == "string" and (name:find("Loot") or name:find("Chest")) then
@@ -835,15 +846,8 @@ task.spawn(function()
 				local p = dlogPending[tostring(d.token)]
 				dlogPending[tostring(d.token)] = nil
 				local res = d.outcome and tostring(d.outcome) or (type(d.outcomes) == "table" and table.concat(d.outcomes, ",") or "?")
-				-- adaptive lead: the server clamps pressedAt up to (arrival - credit), so how early to press depends on
-				-- ping and frame time. Nudge toward the centre from every verdict (EARLY -> later, LATE -> sooner).
-				local why = tostring(d.reason or ""):upper()
-				local step = (res:find("Miss") or res:find("Block")) and 0.010 or 0.003
-				if why:find("LATE") then pressLead = math.min(pressLead + step, 0.08)
-				elseif why:find("EARLY") then pressLead = math.max(pressLead - step, -0.03) end
-				S.dodgeLead = pressLead
-				dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s) | lead %dms"):format(p and p.kind or "?", p and p.what or "?",
-					p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or ""), math.floor(pressLead * 1000 + 0.5)))
+				dlog(("%s %s | perfect ±%sms | pressed %s | server: %s (%s)"):format(p and p.kind or "?", p and p.what or "?",
+					p and p.win or "?", p and (#p.presses > 0 and table.concat(p.presses, " ") or "NONE") or "?", res, tostring(d.reason or "")))
 			elseif name == "CombatVFX" and d.kind == "DamageIndicator" and d.targetUserId == player.UserId and (tonumber(d.amount) or 0) > 0 and not d.healing then
 				dlog(("!! HIT %s for %s%s%s"):format(tostring(d.actionName or "?"), tostring(d.amount), d.critical and " CRIT" or "", d.dot and " (DoT)" or ""))
 			end
@@ -947,30 +951,19 @@ if qte then
 					local cap = os.clock() + 0.13
 					while clock() < target and os.clock() < cap do end
 				end
-				-- target is converted to os.clock once per frame (os.clock always advances, so the spin ends on time).
-				-- Server grade: |pressedAt - (startedAt + target * duration)| <= perfect gives "Dodge"; its EARLY / LATE
-				-- tag is only the side. Block / Miss are what cost HP.
-				local PRESS_LEAD = pressLead -- adaptive, see pressLead
-				local now, clock0 = Workspace:GetServerTimeNow(), os.clock()
-				local function onClock(t) return clock0 + (t - now) - PRESS_LEAD end
+				local now = Workspace:GetServerTimeNow()
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
-				-- spin from about one frame before the target (60..120ms, from the measured frame time); the old fixed
-				-- 120ms lead stuttered at low fps, a one-frame lead missed whenever the game hitched right before the hit
-				local dt = self.nclLastStep and (clock0 - self.nclLastStep) or 0.12
-				self.nclLastStep = clock0
-				local win = math.clamp(dt * 1.25 + 0.004, 0.06, 0.12) -- >= 60ms: a frame hitch right before the moment otherwise lands the press 150ms+ late
-				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - PRESS_LEAD - win then
+				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
 					self.nclPressAt = nil
-					local ct = onClock(at)
-					spinUntil(ct, os.clock)
+					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
 					if self.pressHandler then self.pressHandler() end
-					dlogPress(self.nclPressToken, os.clock() - ct - PRESS_LEAD)
-				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - PRESS_LEAD - win then
+					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
+				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
 					-- barrage: one press per strike, in order
-					local ct = onClock(table.remove(hits, 1))
-					spinUntil(ct, os.clock)
+					local t = table.remove(hits, 1)
+					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
 					if self.pressHandler then self.pressHandler() end
-					dlogPress(self.nclPressToken, os.clock() - ct - PRESS_LEAD)
+					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - t)
 				elseif m and m.at and os.clock() >= m.at - 0.05 then
 					local t = m.at
 					m.at = nil
@@ -1671,6 +1664,7 @@ do
 	local c = Card(playPage, "Automation", "Next Stage: CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Next Path: picks a map card (stars in Run Map). Replay: PLAY AGAIN.")
 	pair(c, { "Auto Join", "autoJoin" }, { "Auto Replay", "autoReplay" })
 	pair(c, { "Auto Next Stage", "autoContinue" }, { "Auto Next Path", "autoPath" })
+	MakeToggle("Stop at 1 life (safety: no new run, gear is wiped on the last life)", "stopAtLife", c)
 end
 local mpRow
 do
