@@ -971,6 +971,9 @@ if qte then
 			if name == "ThiefSlashResult" and type(data) == "table" then dlog(("ATK QTE: %s / %s hits sent"):format(tostring(data.hits), tostring(self.nclPips))) end
 			return send(self, name, data, ...)
 		end
+		-- presses go out 20ms early while still claiming the exact moment: the packet then lands inside the server's
+		-- latency credit even with ~40ms of extra jitter, and an early arrival still grades inside the window
+		local SEND_LEAD = 0.02
 		qte._run = function(self, step, ...)
 			return o.run(self, function(...)
 				local r = step(...)
@@ -986,13 +989,13 @@ if qte then
 				local at, m, hits = self.nclPressAt, self.nclMarks, self.nclStrikes
 				if at and self.defense and self.defense.token == self.nclPressToken and now >= at - 0.12 then
 					self.nclPressAt = nil
-					spinUntil(at, function() return Workspace:GetServerTimeNow() end)
+					spinUntil(at - SEND_LEAD, function() return Workspace:GetServerTimeNow() end) -- claims `at` exactly (see _send)
 					self.nclAim = at; if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - at)
 				elseif hits and hits[1] and self.defense and self.defense.token == self.nclPressToken and now >= hits[1] - 0.12 then
 					-- barrage: one press per strike, in order
 					local t = table.remove(hits, 1)
-					spinUntil(t, function() return Workspace:GetServerTimeNow() end)
+					spinUntil(t - SEND_LEAD, function() return Workspace:GetServerTimeNow() end)
 					self.nclAim = t; if self.pressHandler then self.pressHandler() end
 					dlogPress(self.nclPressToken, Workspace:GetServerTimeNow() - t)
 				elseif m and m.at and os.clock() >= m.at - 0.05 then
