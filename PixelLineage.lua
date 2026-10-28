@@ -32,7 +32,7 @@ local S = {
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
 	autoInvite = false, inviteList = "", waitParty = true, autoAccept = false, autoPotion = false, potionPct = "40", bloodMinHp = "50", gameSpeed = "1x", autoSlot = false, slotNum = "1",
 	autoSell = false, sellRarity = { Common = true, Uncommon = true }, sellType = { weapon = true, head = true, chest = true, legs = true, relic = true, scroll = true },
-	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", stopAtLife = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
+	webhook = "", pingId = "", hookClear = true, hookDeath = true, hookChest = true, tormentStage = "", stopAtLife = true, fpsBoost = true, antiAfk = true, autoReconnect = true, autoSave = true, uiKey = "RightShift",
 }
 -- Config (RUN included) survives the teleport into each run: workspace/NCL HUB/PixelLineage/config.json.
 local HttpService = game:GetService("HttpService")
@@ -861,6 +861,25 @@ end)
 -- macro's own pauses. All of those go through task.wait / task.delay / wait / delay / TweenService:Create, so those
 -- are hooked once per VM and divided by getgenv().NCL_SPEED. QTE timing reads os.clock / GetServerTimeNow and is
 -- not touched, so perfect presses stay exact.
+---------------------------------------------------------------- FPS BOOST
+-- Battles are drawn in PlayerGui; the 3D world behind them is most of the frame cost. Measured on a slow executor:
+-- 22fps with 200ms hitches -> 58fps steady (lowest quality + 3D rendering off). Dodge timing needs steady frames.
+local boostOn, boostQuality = false, nil
+local function applyBoost(on)
+	if on == boostOn then return end
+	boostOn = on
+	pcall(function() RunService:Set3dRenderingEnabled(not on) end)
+	pcall(function()
+		if on then
+			boostQuality = settings().Rendering.QualityLevel
+			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+		elseif boostQuality then
+			settings().Rendering.QualityLevel = boostQuality
+		end
+	end)
+	if on and setfpscap then pcall(setfpscap, 60) end
+end
+
 local function speed() return (getgenv and getgenv().NCL_SPEED) or 1 end
 -- installed only once a speed above 1x is picked: on some mobile executors a hooked task.wait can't yield, so 1x
 -- must leave the game's waits untouched
@@ -1853,6 +1872,7 @@ end
 do
 	local c = Card(miscPage, "Utility", "Hide QTE keeps Perfect QTE pressing unseen; Anti AFK stops the idle kick.")
 	pair(c, { "Hide QTE", "hideQTE" }, { "Anti AFK", "antiAfk" })
+	MakeToggle("FPS Boost (low graphics, no 3D world - steadier dodge timing)", "fpsBoost", c)
 	MakeToggle("Auto Reconnect", "autoReconnect", c)
 end
 
@@ -1948,6 +1968,7 @@ refresh = function()
 	if qte then qte.nclOn, qte.nclHide = S.autoQTE, S.autoQTE and S.hideQTE end
 	if getgenv then getgenv().NCL_SPEED = tonumber(S.gameSpeed:match("%d+")) or 1 end
 	if speed() > 1 then installSpeedHooks() end
+	if boostOn ~= S.fpsBoost then applyBoost(S.fpsBoost) end
 	if skillsDirty then skillsDirty = false; renderSkills() end
 	if S.autoSave and HttpService:JSONEncode(S) ~= saved then saveConfig() end
 	mpRow.Visible = S.mode == "Multiplayer"
@@ -2079,6 +2100,7 @@ local function destroy()
 	alive = false
 	if qte then qte.nclOn = false end
 	if getgenv then getgenv().NCL_SPEED = 1 end
+	applyBoost(false)
 	hoverConn:Disconnect(); keyConn:Disconnect(); idleConn:Disconnect(); dragConn:Disconnect(); stateConn:Disconnect(); reconnectConn:Disconnect()
 	miniDragConn:Disconnect(); miniAnimConn:Disconnect()
 	gui:Destroy()
