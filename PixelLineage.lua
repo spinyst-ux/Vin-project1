@@ -22,11 +22,11 @@ local TXT = {
 	host = "HOST A LOBBY", queue = "RANDOM QUEUE", start = "START RUN",
 	attack = "ATTACK", skills = "SKILLS", back = "BACK", path = "CHOOSE YOUR PATH", choose = "MAKE YOUR CHOICE",
 	satchel = "SATCHEL", potion = "HP POTION", ally = "CHOOSE AN ALLY", waitReady = "WAITING FOR READY", invite = "PARTY INVITE",
-	continue = { "RESUME BATTLE", "CONTINUE", "TO BATTLE", "NEXT FLOOR", "NEXT", "CLAIM", "PLAY AGAIN", "RETURN TO CASTLE" },
+	continue = { "RESUME BATTLE", "CONTINUE", "TO BATTLE", "NEXT FLOOR", "NEXT", "CLAIM", "RETURN TO CASTLE" },
 }
 
 local S = {
-	running = false, autoJoin = true, autoAttack = true, autoSkill = false, autoTarget = true, autoContinue = true, autoQTE = true,
+	running = false, autoJoin = true, autoAttack = true, autoSkill = false, autoTarget = true, autoContinue = true, autoReplay = true, autoQTE = true,
 	mode = "Solo", mpMode = "Host", difficulty = "Normal", targetName = "", clickMode = "Background",
 	skills = {}, autoChest = true, autoPath = true, pathStars = "3", pathBy = "Reward",
 	autoEvent = true, eventPrefer = "OFFER BLOOD", hideQTE = true,
@@ -498,7 +498,6 @@ local function pickTorment()
 	end
 end
 
-local chestSent
 local function step()
 	local list = scan()
 	reportEnd(list)
@@ -628,6 +627,11 @@ local function step()
 		if setOut then press(setOut); log("Set out"); return 2.5 end
 	end
 
+	-- Auto Replay: PLAY AGAIN on the run-end screen (off = Auto Next falls back to RETURN TO CASTLE)
+	if S.autoReplay then
+		local again = find(list, "PLAY AGAIN")
+		if again then press(again); log("Replay"); return 2 end
+	end
 	if S.autoContinue then
 		-- run map: cards RunMap.Cards.OptionN, each with two rows of 5 star icons (DANGER at y=7, REWARD at y=29). Pick the card whose chosen row is closest to S.pathStars; ties -> leftmost.
 		local sign = S.autoPath and find(list, TXT.path)
@@ -701,18 +705,6 @@ local function step()
 		if S.autoChest then
 			for _, e in ipairs(list) do
 				if e[2]:IsA("TextButton") and (e[1]:match("TO OPEN$") or e[1]:match("TO CONTINUE$")) then
-					-- "TO CONTINUE" = loot revealed: post everything shown on that panel once
-					if e[1]:match("TO CONTINUE$") and S.hookChest and chestSent ~= e[2] then
-						chestSent = e[2]
-						local box, lines = e[2].Parent and e[2].Parent.Parent or e[2], {}
-						for _, l in ipairs(list) do
-							if l[2]:IsDescendantOf(box) and l[2] ~= e[2] and #lines < 20 then lines[#lines + 1] = "• " .. l[2].Text:gsub("<[^>]->", "") end
-						end
-						task.spawn(function()
-							local ok, info = webhook("Chest opened", lines, 0xF5B942)
-							log("Webhook chest: " .. (ok and "sent" or info))
-						end)
-					end
 					press(e[2]); log("Chest: " .. e[1]); return 1
 				end
 			end
@@ -764,6 +756,26 @@ task.spawn(function()
 	if state then
 		stateConn = state.OnClientEvent:Connect(function(name, d)
 			if type(d) ~= "table" then return end
+			-- chest loot straight from the server event (BossChestLoot, ...): same on PC and phone, no screen reading.
+			-- Payload shape isn't fixed, so every string/number leaf is posted as "path: value".
+			if S.hookChest and type(name) == "string" and (name:find("Loot") or name:find("Chest")) then
+				local lines = {}
+				local function walk(t, path, depth)
+					for k, v in pairs(t) do
+						local p = path == "" and tostring(k) or (path .. "." .. tostring(k))
+						if type(v) == "table" and depth < 4 then walk(v, p, depth + 1)
+						elseif (type(v) == "string" or type(v) == "number" or type(v) == "boolean") and #lines < 25 then
+							lines[#lines + 1] = "• " .. p .. ": " .. tostring(v)
+						end
+					end
+				end
+				walk(d, "", 0)
+				dlog("CHEST " .. name .. " " .. HttpService:JSONEncode(d):sub(1, 400))
+				task.spawn(function()
+					local ok, info = webhook("Chest opened (" .. name .. ")", lines, 0xF5B942)
+					log("Webhook chest: " .. (ok and "sent" or info))
+				end)
+			end
 			if name == "DefenseTimingStarted" then
 				local kind = type(d.marks) == "table" and ("BARRAGE x" .. #d.marks) or (d.heavy and "HEAVY" or "normal")
 				dlogPending[tostring(d.token)] = { kind = kind, what = tostring(d.actionName or d.title or "?"), presses = {}, at = os.clock(),
@@ -831,6 +843,17 @@ local qte = getgenv and getgenv().NCL_PL_QTE
 if not qte and getgc then
 	for _, t in ipairs(gcTables()) do
 		if type(t) == "table" and rawget(t, "_defense") and rawget(t, "_timedMarks") and rawget(t, "_send") then qte = t; break end
+	end
+end
+local gcInfo = qte and "qte-from-gc" or "qte-not-in-gc"
+-- getgc(true) is missing / limited on some mobile executors: require the class module itself (cached, same table)
+if not qte then
+	for _, m in ipairs(game:GetDescendants()) do
+		if m:IsA("ModuleScript") and m.Name:find("QTE") then
+			if setIdentity then pcall(setIdentity, 2) end
+			local ok, t = pcall(require, m)
+			if ok and type(t) == "table" and rawget(t, "_defense") then qte = t; gcInfo = "qte-from-require"; break end
+		end
 	end
 end
 if qte then
@@ -948,7 +971,12 @@ if writefile then
 	task.spawn(function()
 		while alive do
 			pcall(function()
-				local out = { "== " .. os.date() .. "  running=" .. tostring(S.running) .. "  status=" .. status, "", "== VISIBLE TEXT" }
+				local out = { "== " .. os.date() .. "  running=" .. tostring(S.running) .. "  status=" .. status,
+					("executor=%s  touch=%s  screen=%s  getgc=%s  qte=%s  menu=%s  getconnections=%s  hookfunction=%s"):format(
+						identifyexecutor and tostring((identifyexecutor())) or "?", tostring(UIS.TouchEnabled),
+						tostring(Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize), gcInfo, tostring(qte ~= nil),
+						tostring(menuCache ~= nil), tostring(getconnections ~= nil), tostring(hookfunction ~= nil)),
+					"", "== VISIBLE TEXT" }
 				for _, e in ipairs(scan()) do
 					local b = buttonOf(e[2])
 					out[#out + 1] = string.format("%q [%s] %s | %s", e[1], e[2].ClassName, e[2]:GetFullName(), b and b:GetFullName() or "no button")
@@ -1569,8 +1597,9 @@ end
 
 -- AUTO PLAY
 do
-	local c = Card(playPage, "Automation", "Joins runs. Next / Retry clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM, PLAY AGAIN.")
-	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next / Retry", "autoContinue" })
+	local c = Card(playPage, "Automation", "Next clicks CONTINUE, TO BATTLE, NEXT FLOOR, CLAIM. Replay clicks PLAY AGAIN.")
+	pair(c, { "Auto Join", "autoJoin" }, { "Auto Next", "autoContinue" })
+	MakeToggle("Auto Replay", "autoReplay", c)
 end
 local mpRow
 do
