@@ -957,6 +957,7 @@ if qte then
 			if qte.nclOn and name == "ThiefSlashResult" and type(data) == "table" and (self.nclPips or 0) > 0 then
 				data.hits = math.max(tonumber(data.hits) or 0, self.nclPips)
 			end
+			if name == "ThiefSlashResult" and type(data) == "table" then dlog(("ATK QTE: %s / %s hits sent"):format(tostring(data.hits), tostring(self.nclPips))) end
 			return send(self, name, data, ...)
 		end
 		qte._run = function(self, step, ...)
